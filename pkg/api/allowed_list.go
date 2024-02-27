@@ -13,8 +13,31 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+// For newer versions of the code, remove exact and regex matching
 // +kubebuilder:object:generate=true
+type DefaultSelectorListSpec struct {
+	metav1.LabelSelector `json:",inline"`
+	Default              string `json:"default,omitempty"`
+}
 
+func (in *DefaultSelectorListSpec) MatchDefault(value string) bool {
+	return in.Default == value
+}
+
+func (in *DefaultSelectorListSpec) SelectorMatch(obj client.Object) bool {
+	if obj != nil {
+		selector, err := metav1.LabelSelectorAsSelector(&in.LabelSelector)
+		if err != nil {
+			return false
+		}
+
+		return selector.Matches(labels.Set(obj.GetLabels()))
+	}
+
+	return false
+}
+
+// +kubebuilder:object:generate=true
 type DefaultAllowedListSpec struct {
 	SelectorAllowedListSpec `json:",inline"`
 	Default                 string `json:"default,omitempty"`

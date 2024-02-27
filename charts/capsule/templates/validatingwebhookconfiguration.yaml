@@ -320,3 +320,35 @@ webhooks:
       scope: '*'
   sideEffects: None
   timeoutSeconds: {{ .Values.validatingWebhooksTimeoutSeconds }}
+{{- with .Values.webhooks.gateways }}
+  {{- if .enabled }}
+- admissionReviewVersions:
+    - v1
+    - v1beta1
+  clientConfig:
+{{- if not $.Values.certManager.generateCertificates }}
+    caBundle: Cg==
+{{- end }}
+    service:
+      name: {{ include "capsule.fullname" $ }}-webhook-service
+      namespace: {{ $.Release.Namespace }}
+      path: /gateways
+      port: 443
+  failurePolicy:  {{ .validation.failurePolicy }}
+  name: gateways.projectcapsule.dev
+  rules:
+  - apiGroups:
+    - gateway.networking.k8s.io
+    apiVersions:
+    - v1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - gateways
+  sideEffects: None
+  timeoutSeconds: {{ $.Values.validatingWebhooksTimeoutSeconds }}
+  namespaceSelector:
+    {{- toYaml .validation.namespaceSelector | nindent 4 }}
+  {{- end }}
+{{- end }}

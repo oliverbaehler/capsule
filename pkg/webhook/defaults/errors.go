@@ -54,3 +54,19 @@ func NewPriorityClassError(class string, msg error) error {
 func (e PriorityClassError) Error() string {
 	return fmt.Sprintf("Failed to resolve Priority Class %s: %s", e.priorityClass, e.msg)
 }
+
+type GatewayClassError struct {
+	class string
+	msg   error
+}
+
+func NewGatewayClassError(class string, msg error) error {
+	return &GatewayClassError{
+		class: class,
+		msg:   msg,
+	}
+}
+
+func (e GatewayClassError) Error() string {
+	return fmt.Sprintf("Failed to resolve Gateway Class %s: %s", e.class, e.msg)
+}

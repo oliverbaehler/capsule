@@ -192,6 +192,24 @@ webhooks:
       matchExpressions:
         - key: capsule.clastix.io/tenant
           operator: Exists
+  
+  ## -- Gateway Webhooks
+  gateways:
+    # -- Enable the admission webhooks for the mutating and validating webhooks for Gateway Resources
+    enabled: true
+    validation:
+      failurePolicy: Fail
+      namespaceSelector:
+        matchExpressions:
+          - key: capsule.clastix.io/tenant
+            operator: Exists
+    mutation:
+      failurePolicy: Fail
+      namespaceSelector:
+        matchExpressions:
+          - key: capsule.clastix.io/tenant
+            operator: Exists
+
   namespaces:
     failurePolicy: Fail
   networkpolicies:

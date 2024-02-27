@@ -167,7 +167,8 @@ dev-setup:
 			{'op': 'replace', 'path': '/webhooks/6/clientConfig', 'value':{'url':\"$${WEBHOOK_URL}/persistentvolumeclaims\",'caBundle':\"$${CA_BUNDLE}\"}},\
 			{'op': 'replace', 'path': '/webhooks/7/clientConfig', 'value':{'url':\"$${WEBHOOK_URL}/services\",'caBundle':\"$${CA_BUNDLE}\"}},\
 			{'op': 'replace', 'path': '/webhooks/8/clientConfig', 'value':{'url':\"$${WEBHOOK_URL}/tenantresource-objects\",'caBundle':\"$${CA_BUNDLE}\"}},\
-			{'op': 'replace', 'path': '/webhooks/9/clientConfig', 'value':{'url':\"$${WEBHOOK_URL}/tenants\",'caBundle':\"$${CA_BUNDLE}\"}}\
+			{'op': 'replace', 'path': '/webhooks/9/clientConfig', 'value':{'url':\"$${WEBHOOK_URL}/tenants\",'caBundle':\"$${CA_BUNDLE}\"}},\
+			{'op': 'replace', 'path': '/webhooks/10/clientConfig', 'value':{'url':\"$${WEBHOOK_URL}/gateways\",'caBundle':\"$${CA_BUNDLE}\"}}\
 		]" && \
 	kubectl patch crd tenants.capsule.clastix.io \
 		--type='json' -p="[\
@@ -324,7 +325,7 @@ e2e-build/%:
 	make e2e-install
 
 .PHONY: e2e-install
-e2e-install:
+e2e-install: e2e-install-dependencies
 	helm upgrade \
 		--debug \
 		--install \
@@ -338,6 +339,10 @@ e2e-install:
 		--set 'podSecurityContext.seccompProfile=null' \
 		capsule \
 		./charts/capsule
+
+.PHONY: e2e-install-dependencies
+e2e-install-dependencies:
+	@kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.0.0/standard-install.yaml
 
 .PHONY: e2e-load-image
 e2e-load-image: ko-build-all

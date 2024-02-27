@@ -10,6 +10,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -21,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	capsulev1beta2 "github.com/projectcapsule/capsule/api/v1beta2"
+	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
 // These tests use Ginkgo (BDD-style Go testing framework). Refer to
@@ -51,6 +53,7 @@ var _ = BeforeSuite(func() {
 	Expect(err).ToNot(HaveOccurred())
 	Expect(cfg).ToNot(BeNil())
 
+	Expect(gwapiv1.AddToScheme(scheme.Scheme)).NotTo(HaveOccurred())
 	Expect(capsulev1beta2.AddToScheme(scheme.Scheme)).NotTo(HaveOccurred())
 
 	ctrlClient, err := client.New(cfg, client.Options{Scheme: scheme.Scheme})
@@ -74,4 +77,20 @@ func ownerClient(owner capsulev1beta2.OwnerSpec) (cs kubernetes.Interface) {
 	Expect(err).ToNot(HaveOccurred())
 
 	return cs
+}
+
+func dynamicOwnerClient(owner capsulev1beta2.OwnerSpec) (dynamicClient dynamic.Interface) {
+	// Use config.GetConfig() similar to ownerClient to ensure consistency
+	c, err := config.GetConfig()
+	Expect(err).ToNot(HaveOccurred())
+
+	// Set impersonation details based on the owner
+	c.Impersonate.Groups = []string{capsulev1beta2.GroupVersion.Group, owner.Name}
+	c.Impersonate.UserName = owner.Name
+
+	// Create a new dynamic client for the given config
+	dynamicClient, err = dynamic.NewForConfig(c)
+	Expect(err).ToNot(HaveOccurred())
+
+	return dynamicClient
 }

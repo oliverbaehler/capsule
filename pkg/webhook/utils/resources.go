@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/version"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
 const TRUE string = "true"
@@ -30,6 +31,16 @@ func GetPriorityClassByName(ctx context.Context, c client.Client, name string) (
 // Get StorageClass by name (Does not return error if not found).
 func GetStorageClassByName(ctx context.Context, c client.Client, name string) (*storagev1.StorageClass, error) {
 	class := &storagev1.StorageClass{}
+	if err := c.Get(ctx, types.NamespacedName{Name: name}, class); err != nil {
+		return nil, err
+	}
+
+	return class, nil
+}
+
+// Get GatewayClass by name (Does not return error if not found).
+func GetGatewayClassByName(ctx context.Context, c client.Client, name string) (*gwapiv1.GatewayClass, error) {
+	class := &gwapiv1.GatewayClass{}
 	if err := c.Get(ctx, types.NamespacedName{Name: name}, class); err != nil {
 		return nil, err
 	}

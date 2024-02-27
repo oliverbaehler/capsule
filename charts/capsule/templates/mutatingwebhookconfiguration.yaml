@@ -91,7 +91,39 @@ webhooks:
   namespaceSelector:
   {{- toYaml .namespaceSelector | nindent 4}}
   sideEffects: None
-{{- end }}  
+{{- end }}
+{{- with .Values.webhooks.gateways }}
+  {{- if .enabled }}
+- admissionReviewVersions:
+    - v1
+    - v1beta1
+  clientConfig:
+{{- if not $.Values.certManager.generateCertificates }}
+    caBundle: Cg==
+{{- end }}
+    service:
+      name: {{ include "capsule.fullname" $ }}-webhook-service
+      namespace: {{ $.Release.Namespace }}
+      path: /defaults
+      port: 443
+  failurePolicy:  {{ .mutation.failurePolicy }}
+  name: gateways.defaults.projectcapsule.dev
+  rules:
+  - apiGroups:
+    - gateway.networking.k8s.io
+    apiVersions:
+    - v1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - gateways
+  sideEffects: None
+  timeoutSeconds: {{ $.Values.validatingWebhooksTimeoutSeconds }}
+  namespaceSelector:
+    {{- toYaml .mutation.namespaceSelector | nindent 4 }}
+  {{- end }}
+{{- end }}
 - admissionReviewVersions:
     - v1
     - v1beta1

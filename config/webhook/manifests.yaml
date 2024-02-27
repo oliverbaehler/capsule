@@ -70,6 +70,26 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /defaults
+  failurePolicy: Fail
+  name: gateways.defaults.projectcapsule.dev
+  rules:
+  - apiGroups:
+    - gateway.networking.k8s.io
+    apiVersions:
+    - v1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - gateways
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /namespace-owner-reference
   failurePolicy: Fail
   name: owner.namespace.capsule.clastix.io
@@ -111,6 +131,26 @@ webhooks:
     - DELETE
     resources:
     - '*'
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /gateways
+  failurePolicy: Fail
+  name: gateways.projectcapsule.dev
+  rules:
+  - apiGroups:
+    - gateway.networking.k8s.io
+    apiVersions:
+    - v1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - gateways
   sideEffects: None
 - admissionReviewVersions:
   - v1

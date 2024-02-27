@@ -24,6 +24,8 @@ type TenantSpec struct {
 	// A default value can be specified, and all the PersistentVolumeClaim resources created will inherit the declared class.
 	// Optional.
 	StorageClasses *api.DefaultAllowedListSpec `json:"storageClasses,omitempty"`
+	// Specifies options for the gateway resources, such as additional metadata or block of certain type of Gateway resources. Optional.
+	GatewayOptions GatewayOptions `json:"gatewayOptions,omitempty"`
 	// Specifies options for the Ingress resources, such as allowed hostnames and IngressClass. Optional.
 	IngressOptions IngressOptions `json:"ingressOptions,omitempty"`
 	// Specifies the trusted Image Registries assigned to the Tenant. Capsule assures that all Pods resources created in the Tenant can use only one of the allowed trusted registries. Optional.

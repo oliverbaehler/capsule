@@ -9,6 +9,33 @@ import (
 	"os"
 	goRuntime "runtime"
 
+	capsulev1beta1 "github.com/projectcapsule/capsule/api/v1beta1"
+	capsulev1beta2 "github.com/projectcapsule/capsule/api/v1beta2"
+	configcontroller "github.com/projectcapsule/capsule/controllers/config"
+	podlabelscontroller "github.com/projectcapsule/capsule/controllers/pod"
+	"github.com/projectcapsule/capsule/controllers/pv"
+	rbaccontroller "github.com/projectcapsule/capsule/controllers/rbac"
+	"github.com/projectcapsule/capsule/controllers/resources"
+	servicelabelscontroller "github.com/projectcapsule/capsule/controllers/servicelabels"
+	tenantcontroller "github.com/projectcapsule/capsule/controllers/tenant"
+	tlscontroller "github.com/projectcapsule/capsule/controllers/tls"
+	"github.com/projectcapsule/capsule/pkg/configuration"
+	"github.com/projectcapsule/capsule/pkg/indexer"
+	"github.com/projectcapsule/capsule/pkg/webhook"
+	"github.com/projectcapsule/capsule/pkg/webhook/defaults"
+	"github.com/projectcapsule/capsule/pkg/webhook/gateway"
+	"github.com/projectcapsule/capsule/pkg/webhook/ingress"
+	namespacewebhook "github.com/projectcapsule/capsule/pkg/webhook/namespace"
+	"github.com/projectcapsule/capsule/pkg/webhook/networkpolicy"
+	"github.com/projectcapsule/capsule/pkg/webhook/node"
+	"github.com/projectcapsule/capsule/pkg/webhook/ownerreference"
+	"github.com/projectcapsule/capsule/pkg/webhook/pod"
+	"github.com/projectcapsule/capsule/pkg/webhook/pvc"
+	"github.com/projectcapsule/capsule/pkg/webhook/route"
+	"github.com/projectcapsule/capsule/pkg/webhook/service"
+	"github.com/projectcapsule/capsule/pkg/webhook/tenant"
+	tntresource "github.com/projectcapsule/capsule/pkg/webhook/tenantresource"
+	"github.com/projectcapsule/capsule/pkg/webhook/utils"
 	flag "github.com/spf13/pflag"
 	_ "go.uber.org/automaxprocs"
 	"go.uber.org/zap/zapcore"
@@ -27,33 +54,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	ctrlwebhook "sigs.k8s.io/controller-runtime/pkg/webhook"
-
-	capsulev1beta1 "github.com/projectcapsule/capsule/api/v1beta1"
-	capsulev1beta2 "github.com/projectcapsule/capsule/api/v1beta2"
-	configcontroller "github.com/projectcapsule/capsule/controllers/config"
-	podlabelscontroller "github.com/projectcapsule/capsule/controllers/pod"
-	"github.com/projectcapsule/capsule/controllers/pv"
-	rbaccontroller "github.com/projectcapsule/capsule/controllers/rbac"
-	"github.com/projectcapsule/capsule/controllers/resources"
-	servicelabelscontroller "github.com/projectcapsule/capsule/controllers/servicelabels"
-	tenantcontroller "github.com/projectcapsule/capsule/controllers/tenant"
-	tlscontroller "github.com/projectcapsule/capsule/controllers/tls"
-	"github.com/projectcapsule/capsule/pkg/configuration"
-	"github.com/projectcapsule/capsule/pkg/indexer"
-	"github.com/projectcapsule/capsule/pkg/webhook"
-	"github.com/projectcapsule/capsule/pkg/webhook/defaults"
-	"github.com/projectcapsule/capsule/pkg/webhook/ingress"
-	namespacewebhook "github.com/projectcapsule/capsule/pkg/webhook/namespace"
-	"github.com/projectcapsule/capsule/pkg/webhook/networkpolicy"
-	"github.com/projectcapsule/capsule/pkg/webhook/node"
-	"github.com/projectcapsule/capsule/pkg/webhook/ownerreference"
-	"github.com/projectcapsule/capsule/pkg/webhook/pod"
-	"github.com/projectcapsule/capsule/pkg/webhook/pvc"
-	"github.com/projectcapsule/capsule/pkg/webhook/route"
-	"github.com/projectcapsule/capsule/pkg/webhook/service"
-	"github.com/projectcapsule/capsule/pkg/webhook/tenant"
-	tntresource "github.com/projectcapsule/capsule/pkg/webhook/tenantresource"
-	"github.com/projectcapsule/capsule/pkg/webhook/utils"
+	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
 var (
@@ -67,6 +68,7 @@ func init() {
 	utilruntime.Must(capsulev1beta1.AddToScheme(scheme))
 	utilruntime.Must(capsulev1beta2.AddToScheme(scheme))
 	utilruntime.Must(apiextensionsv1.AddToScheme(scheme))
+	utilruntime.Must(gwapiv1.AddToScheme(scheme))
 }
 
 func printVersion() {
@@ -222,6 +224,7 @@ func main() {
 		route.Pod(pod.ImagePullPolicy(), pod.ContainerRegistry(), pod.PriorityClass(), pod.RuntimeClass()),
 		route.Namespace(utils.InCapsuleGroups(cfg, namespacewebhook.PatchHandler(), namespacewebhook.QuotaHandler(), namespacewebhook.FreezeHandler(cfg), namespacewebhook.PrefixHandler(cfg), namespacewebhook.UserMetadataHandler())),
 		route.Ingress(ingress.Class(cfg, kubeVersion), ingress.Hostnames(cfg), ingress.Collision(cfg), ingress.Wildcard()),
+		route.Gateway(gateway.Class(cfg, kubeVersion)),
 		route.PVC(pvc.Validating(), pvc.PersistentVolumeReuse()),
 		route.Service(service.Handler()),
 		route.TenantResourceObjects(utils.InCapsuleGroups(cfg, tntresource.WriteOpsHandler())),

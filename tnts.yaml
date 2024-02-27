@@ -1,0 +1,18 @@
+---
+apiVersion: capsule.clastix.io/v1beta2
+kind: Tenant
+metadata:
+  labels:
+    kubernetes.io/metadata.name: solar
+  name: solar
+spec:
+  gatewayOptions:
+    allowedClasses:
+      matchLabels:
+        scope: "tenant"
+  owners:
+  - clusterRoles:
+    - admin
+    - capsule-namespace-deleter
+    kind: User
+    name: alice

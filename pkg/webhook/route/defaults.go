@@ -10,6 +10,7 @@ import (
 // +kubebuilder:webhook:path=/defaults,mutating=true,sideEffects=None,admissionReviewVersions=v1,failurePolicy=fail,groups="",resources=pods,verbs=create,versions=v1,name=pod.defaults.capsule.clastix.io
 // +kubebuilder:webhook:path=/defaults,mutating=true,sideEffects=None,admissionReviewVersions=v1,failurePolicy=fail,groups="",resources=persistentvolumeclaims,verbs=create,versions=v1,name=storage.defaults.capsule.clastix.io
 // +kubebuilder:webhook:path=/defaults,mutating=true,sideEffects=None,admissionReviewVersions=v1,failurePolicy=fail,groups=networking.k8s.io,resources=ingresses,verbs=create;update,versions=v1beta1;v1,name=ingress.defaults.capsule.clastix.io
+// +kubebuilder:webhook:path=/defaults,mutating=true,sideEffects=None,admissionReviewVersions=v1,failurePolicy=fail,groups=gateway.networking.k8s.io,resources=gateways,verbs=create;update,versions=v1,name=gateways.defaults.projectcapsule.dev
 
 type defaults struct {
 	handlers []capsulewebhook.Handler
