@@ -20,7 +20,7 @@ ARG BUILD_DATE
 # Copy the go source
 COPY main.go main.go
 COPY version.go version.go
-COPY api/ api/
+COPY apis/ apis/
 COPY controllers/ controllers/
 COPY pkg/ pkg/
 
