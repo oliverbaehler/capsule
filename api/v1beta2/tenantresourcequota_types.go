@@ -4,42 +4,19 @@
 package v1beta2
 
 import (
+	"github.com/projectcapsule/capsule/pkg/api"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// +kubebuilder:validation:Enum=Tenant;Namespace
-type ResourceQuotaScope string
-
-const (
-	ResourceQuotaScopeTenant    ResourceQuotaScope = "Tenant"
-	ResourceQuotaScopeNamespace ResourceQuotaScope = "Namespace"
-)
-
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
-
 // TenantResourceQuotaSpec defines the desired state of TenantResourceQuota
 type TenantResourceQuotaSpec struct {
-	// Selector is used to select the resources that the Resource Budget should apply to.
-	Selector metav1.LabelSelector `json:"selector,omitempty"`
-
-	// +kubebuilder:default=Tenant
-	// Define if the Resource Budget should compute resource across all Namespaces in the Tenant or individually per cluster. Default is Tenant
-	Scope ResourceQuotaScope `json:"scope,omitempty"`
-
+	// Selector is used to select the tenants that the Resource Budget should apply to.
+	NamespaceSelector metav1.LabelSelector `json:"selector,omitempty"`
 	// Takes a resource quota
 	ResourceQuota corev1.ResourceQuotaSpec `json:"quota,omitempty"`
-}
-
-// TenantResourceQuotaStatus defines the observed state of TenantResourceQuota
-type TenantResourceQuotaStatus struct {
-	// Hard is the set of enforced hard limits for each named resource
-	// +optional
-	Hard corev1.ResourceList
-	// Used is the current observed total usage of the resource on this policy
-	// +optional
-	Used corev1.ResourceList
+	// Allow Specifying scheduling options for the selected tenants
+	Scheduling []api.SchedulingOptions `json:"scheduling,omitempty"`
 }
 
 //+kubebuilder:object:root=true

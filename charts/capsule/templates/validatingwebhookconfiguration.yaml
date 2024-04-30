@@ -320,3 +320,33 @@ webhooks:
       scope: '*'
   sideEffects: None
   timeoutSeconds: {{ .Values.validatingWebhooksTimeoutSeconds }}
+{{- with .Values.webhooks.resourcequota }}  
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+{{- if not $.Values.certManager.generateCertificates }}
+    caBundle: Cg==
+{{- end }}
+    service:
+      name: {{ include "capsule.fullname" $ }}-webhook-service
+      namespace: {{ $.Release.Namespace }}
+      path: /scheduling
+      port: 443
+  failurePolicy: {{ .failurePolicy }}
+  name: resourcequota.projectcapsule.dev
+  rules:
+  - apiGroups:
+    - ""
+    apiVersions:
+    - v1
+    operations:
+    - CREATE
+    - UPDATE
+    - DELETE
+    resources:
+    - resourcequotas
+  namespaceSelector:
+  {{- toYaml .namespaceSelector | nindent 4}}
+  sideEffects: NoneOnDryRun
+  timeoutSeconds: {{ $.Values.mutatingWebhooksTimeoutSeconds }}
+{{- end }}

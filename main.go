@@ -34,6 +34,7 @@ import (
 	podlabelscontroller "github.com/projectcapsule/capsule/controllers/pod"
 	"github.com/projectcapsule/capsule/controllers/pv"
 	rbaccontroller "github.com/projectcapsule/capsule/controllers/rbac"
+	quotacontroller "github.com/projectcapsule/capsule/controllers/resourcequota"
 	"github.com/projectcapsule/capsule/controllers/resources"
 	servicelabelscontroller "github.com/projectcapsule/capsule/controllers/servicelabels"
 	tenantcontroller "github.com/projectcapsule/capsule/controllers/tenant"
@@ -49,6 +50,8 @@ import (
 	"github.com/projectcapsule/capsule/pkg/webhook/ownerreference"
 	"github.com/projectcapsule/capsule/pkg/webhook/pod"
 	"github.com/projectcapsule/capsule/pkg/webhook/pvc"
+	"github.com/projectcapsule/capsule/pkg/webhook/quota"
+	"github.com/projectcapsule/capsule/pkg/webhook/resourcequota"
 	"github.com/projectcapsule/capsule/pkg/webhook/route"
 	"github.com/projectcapsule/capsule/pkg/webhook/service"
 	"github.com/projectcapsule/capsule/pkg/webhook/tenant"
@@ -219,6 +222,7 @@ func main() {
 	// webhooks: the order matters, don't change it and just append
 	webhooksList := append(
 		make([]webhook.Webhook, 0),
+		route.ResourceQuota(resourcequota.ValidationHandler(cfg, kubeVersion)),
 		route.Pod(pod.ImagePullPolicy(), pod.ContainerRegistry(), pod.PriorityClass(), pod.RuntimeClass()),
 		route.Namespace(utils.InCapsuleGroups(cfg, namespacewebhook.PatchHandler(), namespacewebhook.QuotaHandler(), namespacewebhook.FreezeHandler(cfg), namespacewebhook.PrefixHandler(cfg), namespacewebhook.UserMetadataHandler())),
 		route.Ingress(ingress.Class(cfg, kubeVersion), ingress.Hostnames(cfg), ingress.Collision(cfg), ingress.Wildcard()),
@@ -231,6 +235,7 @@ func main() {
 		route.Cordoning(tenant.CordoningHandler(cfg), tenant.ResourceCounterHandler(manager.GetClient())),
 		route.Node(utils.InCapsuleGroups(cfg, node.UserMetadataHandler(cfg, kubeVersion))),
 		route.Defaults(defaults.Handler(cfg, kubeVersion)),
+		route.Quota(quota.MutationHandler(cfg, kubeVersion)),
 	)
 
 	nodeWebhookSupported, _ := utils.NodeWebhookSupported(kubeVersion)
@@ -305,6 +310,16 @@ func main() {
 
 	if err = (&resources.Namespaced{}).SetupWithManager(manager); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "resources.Namespaced")
+		os.Exit(1)
+	}
+
+	if err = (&quotacontroller.Controller{
+		RESTConfig: manager.GetConfig(),
+		Client:     manager.GetClient(),
+		Log:        ctrl.Log.WithName("controllers").WithName("Quotas"),
+		Recorder:   manager.GetEventRecorderFor("quota-controller"),
+	}).SetupWithManager(manager); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "TenantQuota")
 		os.Exit(1)
 	}
 

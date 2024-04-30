@@ -152,7 +152,8 @@ dev-setup:
 		    {'op': 'replace', 'path': '/webhooks/0/clientConfig', 'value':{'url':\"$${WEBHOOK_URL}/defaults\",'caBundle':\"$${CA_BUNDLE}\"}},\
 			{'op': 'replace', 'path': '/webhooks/1/clientConfig', 'value':{'url':\"$${WEBHOOK_URL}/defaults\",'caBundle':\"$${CA_BUNDLE}\"}},\
 			{'op': 'replace', 'path': '/webhooks/2/clientConfig', 'value':{'url':\"$${WEBHOOK_URL}/defaults\",'caBundle':\"$${CA_BUNDLE}\"}},\
-			{'op': 'replace', 'path': '/webhooks/3/clientConfig', 'value':{'url':\"$${WEBHOOK_URL}/namespace-owner-reference\",'caBundle':\"$${CA_BUNDLE}\"}}\
+			{'op': 'replace', 'path': '/webhooks/3/clientConfig', 'value':{'url':\"$${WEBHOOK_URL}/namespace-owner-reference\",'caBundle':\"$${CA_BUNDLE}\"}},\
+			{'op': 'replace', 'path': '/webhooks/4/clientConfig', 'value':{'url':\"$${WEBHOOK_URL}/scheduling\",'caBundle':\"$${CA_BUNDLE}\"}}\
 		]" && \
 	kubectl patch ValidatingWebhookConfiguration capsule-validating-webhook-configuration \
 		--type='json' -p="[\
@@ -165,7 +166,8 @@ dev-setup:
 			{'op': 'replace', 'path': '/webhooks/6/clientConfig', 'value':{'url':\"$${WEBHOOK_URL}/persistentvolumeclaims\",'caBundle':\"$${CA_BUNDLE}\"}},\
 			{'op': 'replace', 'path': '/webhooks/7/clientConfig', 'value':{'url':\"$${WEBHOOK_URL}/services\",'caBundle':\"$${CA_BUNDLE}\"}},\
 			{'op': 'replace', 'path': '/webhooks/8/clientConfig', 'value':{'url':\"$${WEBHOOK_URL}/tenantresource-objects\",'caBundle':\"$${CA_BUNDLE}\"}},\
-			{'op': 'replace', 'path': '/webhooks/9/clientConfig', 'value':{'url':\"$${WEBHOOK_URL}/tenants\",'caBundle':\"$${CA_BUNDLE}\"}}\
+			{'op': 'replace', 'path': '/webhooks/9/clientConfig', 'value':{'url':\"$${WEBHOOK_URL}/tenants\",'caBundle':\"$${CA_BUNDLE}\"}},\
+			{'op': 'replace', 'path': '/webhooks/10/clientConfig', 'value':{'url':\"$${WEBHOOK_URL}/resourcequota\",'caBundle':\"$${CA_BUNDLE}\"}}\
 		]" && \
 	kubectl patch crd tenants.capsule.clastix.io \
 		--type='json' -p="[\

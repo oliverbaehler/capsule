@@ -1,0 +1,38 @@
+---
+apiVersion: capsule.clastix.io/v1beta2
+kind: Tenant
+metadata:
+  name: oil
+  labels:
+    env: production
+spec:
+  owners:
+  - name: alice
+    kind: User
+---
+apiVersion: capsule.clastix.io/v1beta2
+kind: Tenant
+metadata:
+  name: solar
+  labels:
+    env: production
+spec:
+  owners:
+  - name: alice
+    kind: User
+---
+apiVersion: capsule.clastix.io/v1beta2
+kind: Tenant
+metadata:
+  name: green
+  labels:
+    env: development
+spec:
+  owners:
+  - name: alice
+    kind: User
+
+
+
+
+

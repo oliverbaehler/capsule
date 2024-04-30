@@ -1,0 +1,28 @@
+---
+apiVersion: capsule.clastix.io/v1beta2
+kind: TenantResourceQuota
+metadata:
+  name: production
+spec:
+  selector:
+    matchLabels:
+      env: production
+  quota:
+    hard:
+      cpu: "10"
+      memory: 20Gi
+      pods: "10"
+---
+apiVersion: capsule.clastix.io/v1beta2
+kind: TenantResourceQuota
+metadata:
+  name: green
+spec:
+  selector:
+    matchLabels:
+      capsule.clastix.io/tenant: green
+  quota:
+    hard:
+      cpu: "10"
+      memory: 20Gi
+      pods: "10"
