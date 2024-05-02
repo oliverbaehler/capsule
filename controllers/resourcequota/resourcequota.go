@@ -100,15 +100,18 @@ func (r *Controller) syncResourceQuotaToNamespace(ctx context.Context, origin *c
 	}
 
 	var res controllerutil.OperationResult
+
 	err = retry.RetryOnConflict(retry.DefaultBackoff, func() (retryErr error) {
 		res, retryErr = controllerutil.CreateOrUpdate(ctx, r.Client, target, func() (err error) {
 			targetLabels := target.GetLabels()
 			if targetLabels == nil {
 				targetLabels = map[string]string{}
 			}
+			r.Log.Info("GOTHERE "+string(res), "name", target.Name, "namespace", target.Namespace)
 
 			targetLabels[api.ClusterResourceQuotaLabel] = origin.Name
 
+			targetLabels["HELLO"] = "MEE"
 			target.Spec = *origin.Spec.ResourceQuota.DeepCopy()
 
 			return controllerutil.SetControllerReference(origin, target, r.Client.Scheme())

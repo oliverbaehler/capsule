@@ -7,8 +7,18 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
+// +kubebuilder:validation:Enum=Reconciling;Ready
+type TenantResourceQuotaPhase string
+
+const (
+	TenantResourceQuotaPhaseReconciling TenantResourceQuotaPhase = "Reconciling"
+	TenantResourceQuotaPhaseActive      TenantResourceQuotaPhase = "Ready"
+)
+
 // TenantResourceQuotaStatus defines the observed state of TenantResourceQuota
 type TenantResourceQuotaStatus struct {
+	// Status is the current status of the resource quota
+	Phase TenantResourceQuotaPhase `json:"phase,omitempty"`
 	// Hard is the set of enforced hard limits for each named resource
 	// +optional
 	Quota corev1.ResourceQuotaStatus `json:"quota,omitempty"`

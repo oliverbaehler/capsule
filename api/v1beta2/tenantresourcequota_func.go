@@ -9,6 +9,15 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
+// If Quota Phase is active
+func (in *TenantResourceQuota) IsActive() bool {
+	if in.Status.Phase == "" {
+		return false
+	}
+
+	return in.Status.Phase == TenantResourceQuotaPhaseActive
+}
+
 // Assigns selected Tenants to status
 func (in *TenantResourceQuota) AssignNamespaces(namespaces []corev1.Namespace) {
 	var s []string

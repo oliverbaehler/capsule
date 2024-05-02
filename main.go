@@ -50,7 +50,6 @@ import (
 	"github.com/projectcapsule/capsule/pkg/webhook/ownerreference"
 	"github.com/projectcapsule/capsule/pkg/webhook/pod"
 	"github.com/projectcapsule/capsule/pkg/webhook/pvc"
-	"github.com/projectcapsule/capsule/pkg/webhook/quota"
 	"github.com/projectcapsule/capsule/pkg/webhook/resourcequota"
 	"github.com/projectcapsule/capsule/pkg/webhook/route"
 	"github.com/projectcapsule/capsule/pkg/webhook/service"
@@ -235,7 +234,6 @@ func main() {
 		route.Cordoning(tenant.CordoningHandler(cfg), tenant.ResourceCounterHandler(manager.GetClient())),
 		route.Node(utils.InCapsuleGroups(cfg, node.UserMetadataHandler(cfg, kubeVersion))),
 		route.Defaults(defaults.Handler(cfg, kubeVersion)),
-		route.Quota(quota.MutationHandler(cfg, kubeVersion)),
 	)
 
 	nodeWebhookSupported, _ := utils.NodeWebhookSupported(kubeVersion)

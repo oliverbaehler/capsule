@@ -16,10 +16,8 @@ import (
 	quota "k8s.io/apiserver/pkg/quota/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/record"
-	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -118,9 +116,21 @@ func (r Controller) Reconcile(ctx context.Context, request ctrl.Request) (result
 		return
 	}
 
+	if err = r.statusPhaseTransition(ctx, origin, capsulev1beta2.TenantResourceQuotaPhaseReconciling); err != nil {
+		r.Log.Error(err, "TenantResourceQuota status phase update failed")
+
+		return result, err
+	}
+
 	// Ensuring all namespaces are collected
 	if result, err = r.reconcile(ctx, origin); err != nil {
 		r.Log.Error(err, "TenantResourceQuota reconciling failed")
+
+		return result, err
+	}
+
+	if err = r.statusPhaseTransition(ctx, origin, capsulev1beta2.TenantResourceQuotaPhaseActive); err != nil {
+		r.Log.Error(err, "TenantResourceQuota status phase update failed")
 
 		return result, err
 	}
@@ -163,18 +173,6 @@ func (r *Controller) reconcile(ctx context.Context, origin *capsulev1beta2.Tenan
 	}
 
 	return reconcile.Result{}, nil
-}
-
-func (r *Controller) collectNamespaces(ctx context.Context, origin *capsulev1beta2.TenantResourceQuota, nsList []corev1.Namespace) error {
-	return retry.RetryOnConflict(retry.DefaultBackoff, func() (err error) {
-		_, err = controllerutil.CreateOrUpdate(ctx, r.Client, origin.DeepCopy(), func() error {
-			origin.AssignNamespaces(nsList)
-
-			return r.Client.Status().Update(ctx, origin, &client.SubResourceUpdateOptions{})
-		})
-
-		return
-	})
 }
 
 // Compares observed tenants with the current tenants (diffs require cleanup)

@@ -38,7 +38,7 @@ func ValidationHandler(cfg configuration.Configuration, version *version.Version
 
 func (h *validationhandler) OnCreate(client client.Client, decoder *admission.Decoder, recorder record.EventRecorder) capsulewebhook.Func {
 	return func(ctx context.Context, req admission.Request) *admission.Response {
-		return h.handle(ctx, req, client, decoder, recorder)
+		return nil
 	}
 }
 
@@ -50,11 +50,15 @@ func (h *validationhandler) OnDelete(client client.Client, decoder *admission.De
 
 func (h *validationhandler) OnUpdate(client client.Client, decoder *admission.Decoder, recorder record.EventRecorder) capsulewebhook.Func {
 	return func(ctx context.Context, req admission.Request) *admission.Response {
-		return h.handle(ctx, req, client, decoder, recorder)
+		return nil
 	}
 }
 
 func (h *validationhandler) handle(_ context.Context, req admission.Request, _ client.Client, decoder *admission.Decoder, _ record.EventRecorder) (response *admission.Response) {
+	res := admission.Denied(fmt.Sprintf("User:" + req.UserInfo.String() + " Managed ResourceQuota can not be modified"))
+	response = &res
+	return
+
 	if req.Resource == (metav1.GroupVersionResource{Group: "", Version: "v1", Resource: "resourcequotas"}) {
 		quota := &corev1.ResourceQuota{}
 		if err := decoder.Decode(req, quota); err != nil {
@@ -72,7 +76,7 @@ func (h *validationhandler) handle(_ context.Context, req admission.Request, _ c
 	}
 
 	if response == nil {
-		skip := admission.Allowed("Skipping Mutation")
+		skip := admission.Allowed("")
 
 		response = &skip
 	}
