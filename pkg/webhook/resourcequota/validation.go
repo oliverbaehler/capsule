@@ -36,25 +36,25 @@ func ValidationHandler(cfg configuration.Configuration, version *version.Version
 	}
 }
 
-func (h *validationhandler) OnCreate(client client.Client, decoder *admission.Decoder, recorder record.EventRecorder) capsulewebhook.Func {
+func (h *validationhandler) OnCreate(client client.Client, decoder admission.Decoder, recorder record.EventRecorder) capsulewebhook.Func {
 	return func(ctx context.Context, req admission.Request) *admission.Response {
 		return nil
 	}
 }
 
-func (h *validationhandler) OnDelete(client client.Client, decoder *admission.Decoder, recorder record.EventRecorder) capsulewebhook.Func {
+func (h *validationhandler) OnDelete(client client.Client, decoder admission.Decoder, recorder record.EventRecorder) capsulewebhook.Func {
 	return func(ctx context.Context, req admission.Request) *admission.Response {
 		return h.handle(ctx, req, client, decoder, recorder)
 	}
 }
 
-func (h *validationhandler) OnUpdate(client client.Client, decoder *admission.Decoder, recorder record.EventRecorder) capsulewebhook.Func {
+func (h *validationhandler) OnUpdate(client client.Client, decoder admission.Decoder, recorder record.EventRecorder) capsulewebhook.Func {
 	return func(ctx context.Context, req admission.Request) *admission.Response {
 		return nil
 	}
 }
 
-func (h *validationhandler) handle(_ context.Context, req admission.Request, _ client.Client, decoder *admission.Decoder, _ record.EventRecorder) (response *admission.Response) {
+func (h *validationhandler) handle(_ context.Context, req admission.Request, _ client.Client, decoder admission.Decoder, _ record.EventRecorder) (response *admission.Response) {
 	res := admission.Denied(fmt.Sprintf("User:" + req.UserInfo.String() + " Managed ResourceQuota can not be modified"))
 	response = &res
 	return

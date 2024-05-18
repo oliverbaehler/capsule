@@ -22,32 +22,32 @@ type schedulinghandler struct {
 	version *version.Version
 }
 
-func MutationHandler(cfg configuration.Configuration, version *version.Version) capsulewebhook.Handler {
+func SchedulingHandler(cfg configuration.Configuration, version *version.Version) capsulewebhook.Handler {
 	return &schedulinghandler{
 		cfg:     cfg,
 		version: version,
 	}
 }
 
-func (h *schedulinghandler) OnCreate(client client.Client, decoder *admission.Decoder, recorder record.EventRecorder) capsulewebhook.Func {
+func (h *schedulinghandler) OnCreate(client client.Client, decoder admission.Decoder, recorder record.EventRecorder) capsulewebhook.Func {
 	return func(ctx context.Context, req admission.Request) *admission.Response {
 		return h.handle(ctx, req, client, decoder, recorder)
 	}
 }
 
-func (h *schedulinghandler) OnDelete(_ client.Client, _ *admission.Decoder, _ record.EventRecorder) capsulewebhook.Func {
+func (h *schedulinghandler) OnDelete(_ client.Client, _ admission.Decoder, _ record.EventRecorder) capsulewebhook.Func {
 	return func(ctx context.Context, req admission.Request) *admission.Response {
 		return nil
 	}
 }
 
-func (h *schedulinghandler) OnUpdate(client client.Client, decoder *admission.Decoder, recorder record.EventRecorder) capsulewebhook.Func {
+func (h *schedulinghandler) OnUpdate(client client.Client, decoder admission.Decoder, recorder record.EventRecorder) capsulewebhook.Func {
 	return func(ctx context.Context, req admission.Request) *admission.Response {
 		return h.handle(ctx, req, client, decoder, recorder)
 	}
 }
 
-func (h *schedulinghandler) handle(ctx context.Context, req admission.Request, c client.Client, decoder *admission.Decoder, _ record.EventRecorder) *admission.Response {
+func (h *schedulinghandler) handle(ctx context.Context, req admission.Request, c client.Client, decoder admission.Decoder, _ record.EventRecorder) *admission.Response {
 	var response admission.Response
 
 	pod := &corev1.Pod{}
