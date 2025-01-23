@@ -105,10 +105,12 @@ Determine the Kubernetes version to use for jobsFullyQualifiedDockerImage tag
 Create the jobs fully-qualified Docker image to use
 */}}
 {{- define "capsule.jobsFullyQualifiedDockerImage" -}}
-{{- if .Values.jobs.image.tag }}
-{{- printf "%s/%s:%s" .Values.jobs.image.registry .Values.jobs.image.repository .Values.jobs.image.tag -}}
+{{- $Values := mergeOverwrite $.Values.global.jobs.kubectl $.Values.jobs -}}
+
+{{- if $Values.image.tag }}
+{{- printf "%s/%s:%s" $Values.image.registry $Values.image.repository $Values.image.tag -}}
 {{- else }}
-{{- printf "%s/%s:%s" .Values.jobs.image.registry .Values.jobs.image.repository (include "capsule.jobsTagKubeVersion" .) -}}
+{{- printf "%s/%s:%s" $Values.image.registry $Values.image.repository (include "capsule.jobsTagKubeVersion" .) -}}
 {{- end }}
 {{- end }}
 
@@ -125,3 +127,32 @@ Create the Capsule TLS Secret name to use
 {{- define "capsule.secretTlsName" -}}
 {{ default ( printf "%s-tls" ( include "capsule.fullname" . ) ) .Values.tls.name }}
 {{- end }}
+
+
+{{/*
+Capsule Webhook service (Called with $.Path)
+
+*/}}
+{{- define "capsule.webhooks.service" -}}
+  {{- include "capsule.webhooks.cabundle" $.ctx | nindent 0 }}
+  {{- if $.ctx.Values.webhooks.service.url }}
+url: {{ printf "%s/%s" (trimSuffix "/" $.ctx.Values.webhooks.service.url ) (trimPrefix "/" (required "Path is required for the function" $.path)) }}
+  {{- else }}
+service:
+  name: {{ default (printf "%s-webhook-service" (include "capsule.fullname" $.ctx)) $.ctx.Values.webhooks.service.name }}
+  namespace: {{ default $.ctx.Release.Namespace $.ctx.Values.webhooks.service.namespace }}
+  port: {{ default 443 $.ctx.Values.webhooks.service.port }}
+  path: {{ required "Path is required for the function" $.path }}
+  {{- end }}
+{{- end }}
+
+{{/*
+Capsule Webhook endpoint CA Bundle
+*/}}
+{{- define "capsule.webhooks.cabundle" -}}
+  {{- if $.Values.webhooks.service.caBundle -}}
+caBundle: {{ $.Values.webhooks.service.caBundle -}}
+  {{- end -}}
+{{- end -}}
+
+

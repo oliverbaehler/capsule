@@ -5,9 +5,10 @@ package resources
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sync"
 
-	"github.com/hashicorp/go-multierror"
 	"github.com/valyala/fasttemplate"
 	corev1 "k8s.io/api/core/v1"
 	apierr "k8s.io/apimachinery/pkg/api/errors"
@@ -78,6 +79,7 @@ func (r *Processor) HandlePruning(ctx context.Context, current, desired sets.Set
 	return updateStatus
 }
 
+//nolint:gocognit
 func (r *Processor) HandleSection(ctx context.Context, tnt capsulev1beta2.Tenant, allowCrossNamespaceSelection bool, tenantLabel string, resourceIndex int, spec capsulev1beta2.ResourceSpec) ([]string, error) {
 	log := ctrllog.FromContext(ctx)
 
@@ -124,14 +126,13 @@ func (r *Processor) HandleSection(ctx context.Context, tnt capsulev1beta2.Tenant
 
 	objLabels[Label] = fmt.Sprintf("%d", resourceIndex)
 	objLabels[tenantLabel] = tnt.GetName()
-
 	// processed will contain the sets of resources replicated, both for the raw and the Namespaced ones:
 	// these are required to perform a final pruning once the replication has been occurred.
 	processed := sets.NewString()
 
 	tntNamespaces := sets.NewString(tnt.Status.Namespaces...)
 
-	syncErr := new(multierror.Error)
+	var syncErr error
 
 	codecFactory := serializer.NewCodecFactory(r.client.Scheme())
 
@@ -153,7 +154,7 @@ func (r *Processor) HandleSection(ctx context.Context, tnt capsulev1beta2.Tenant
 			if selectorErr != nil {
 				log.Error(selectorErr, "cannot create Selector for namespacedItem", keysAndValues...)
 
-				syncErr = multierror.Append(syncErr, selectorErr)
+				syncErr = errors.Join(syncErr, selectorErr)
 
 				continue
 			}
@@ -164,27 +165,38 @@ func (r *Processor) HandleSection(ctx context.Context, tnt capsulev1beta2.Tenant
 			if clientErr := r.client.List(ctx, &objs, client.InNamespace(item.Namespace), client.MatchingLabelsSelector{Selector: itemSelector}); clientErr != nil {
 				log.Error(clientErr, "cannot retrieve object for namespacedItem", keysAndValues...)
 
-				syncErr = multierror.Append(syncErr, clientErr)
+				syncErr = errors.Join(syncErr, clientErr)
 
 				continue
 			}
 
-			multiErr := new(multierror.Group)
+			var wg sync.WaitGroup
+
+			errorsChan := make(chan error, len(objs.Items))
+			// processedRaw is used to avoid concurrent map writes during iteration of namespaced items:
+			// the objects will be then added to processed variable if the resulting string is not empty,
+			// meaning it has been processed correctly.
+			processedRaw := make([]string, len(objs.Items))
 			// Iterating over all the retrieved objects from the resource spec to get replicated in all the selected Namespaces:
 			// in case of error during the create or update function, this will be appended to the list of errors.
-			for _, o := range objs.Items {
+			for i, o := range objs.Items {
 				obj := o
 				obj.SetNamespace(ns.Name)
 				obj.SetOwnerReferences(nil)
 
-				multiErr.Go(func() error {
+				wg.Add(1)
+
+				go func(index int, obj unstructured.Unstructured) {
+					defer wg.Done()
+
 					kv := keysAndValues
 					kv = append(kv, "resource", fmt.Sprintf("%s/%s", obj.GetNamespace(), obj.GetNamespace()))
 
 					if opErr := r.createOrUpdate(ctx, &obj, objLabels, objAnnotations); opErr != nil {
 						log.Error(opErr, "unable to sync namespacedItems", kv...)
+						errorsChan <- opErr
 
-						return opErr
+						return
 					}
 
 					log.Info("resource has been replicated", kv...)
@@ -195,14 +207,25 @@ func (r *Processor) HandleSection(ctx context.Context, tnt capsulev1beta2.Tenant
 					replicatedItem.Namespace = ns.Name
 					replicatedItem.APIVersion = obj.GetAPIVersion()
 
-					processed.Insert(replicatedItem.String())
-
-					return nil
-				})
+					processedRaw[index] = replicatedItem.String()
+				}(i, obj)
 			}
 
-			if objsErr := multiErr.Wait(); objsErr != nil {
-				syncErr = multierror.Append(syncErr, objsErr)
+			wg.Wait()
+			close(errorsChan)
+
+			for err := range errorsChan {
+				if err != nil {
+					syncErr = errors.Join(syncErr, err)
+				}
+			}
+
+			for _, p := range processedRaw {
+				if p == "" {
+					continue
+				}
+
+				processed.Insert(p)
 			}
 		}
 
@@ -221,7 +244,7 @@ func (r *Processor) HandleSection(ctx context.Context, tnt capsulev1beta2.Tenant
 			if _, _, decodeErr := codecFactory.UniversalDeserializer().Decode([]byte(tmplString), nil, &obj); decodeErr != nil {
 				log.Error(decodeErr, "unable to deserialize rawItem", keysAndValues...)
 
-				syncErr = multierror.Append(syncErr, decodeErr)
+				syncErr = errors.Join(syncErr, decodeErr)
 
 				continue
 			}
@@ -232,7 +255,7 @@ func (r *Processor) HandleSection(ctx context.Context, tnt capsulev1beta2.Tenant
 				log.Info("unable to sync rawItem", keysAndValues...)
 				// In case of error processing an item in one of any selected Namespaces, storing it to report it lately
 				// to the upper call to ensure a partial sync that will be fixed by a subsequent reconciliation.
-				syncErr = multierror.Append(syncErr, rawErr)
+				syncErr = errors.Join(syncErr, rawErr)
 			} else {
 				log.Info("resource has been replicated", keysAndValues...)
 
@@ -247,7 +270,7 @@ func (r *Processor) HandleSection(ctx context.Context, tnt capsulev1beta2.Tenant
 		}
 	}
 
-	return processed.List(), syncErr.ErrorOrNil()
+	return processed.List(), syncErr
 }
 
 // createOrUpdate replicates the provided unstructured object to all the provided Namespaces:

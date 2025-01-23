@@ -1,0 +1,84 @@
+{{- $Values := mergeOverwrite $.Values.global.jobs.kubectl $.Values.jobs -}}
+
+{{- if .Values.tls.create }}
+  {{- if not $.Values.crds.exclusive }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: "{{ include "capsule.post-install.name" . }}"
+  labels:
+    app.kubernetes.io/component: {{ include "capsule.post-install.component" . | quote }}
+    {{- include "capsule.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook-weight": "-1"
+    {{- include "capsule.post-install.annotations" . | nindent 4 }}
+    {{- with $Values.annotations }}
+      {{- . | toYaml | nindent 4 }}
+    {{- end }}
+spec:
+  backoffLimit: {{ $Values.backoffLimit }}
+  {{- if ge $Values.ttlSecondsAfterFinished 0.0 }}
+  ttlSecondsAfterFinished: {{ $Values.ttlSecondsAfterFinished }}
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: {{ include "capsule.post-install.component" . | quote }}
+        {{- include "capsule.selectorLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: {{ $Values.restartPolicy }}
+      {{- with $Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $Values.topologySpreadConstraints }}
+      topologySpreadConstraints: 
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with $Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "capsule.post-install.name" . }}
+      containers:
+      - name: post-install
+        image: {{ include "capsule.jobsFullyQualifiedDockerImage" . }}
+        imagePullPolicy: {{ $Values.image.pullPolicy }}
+        command: 
+        - "sh"
+        - "-c"
+        - |
+          set -o errexit ; set -o nounset
+          while [ -z $(kubectl -n $NAMESPACE get secret {{ include "capsule.secretTlsName" $ }} -o jsonpath='{.data.tls\.crt}') ]; do
+            echo 'waiting Capsule to be up and running...' && sleep 5;
+          done
+        env:
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        {{- with $Values.securityContext }}
+        securityContext:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- with $Values.resources }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+  {{- end }}
+{{- end }}

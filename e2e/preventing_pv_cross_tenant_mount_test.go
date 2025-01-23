@@ -79,7 +79,7 @@ var _ = Describe("preventing PersistentVolume cross-tenant mount", func() {
 				AccessModes: []corev1.PersistentVolumeAccessMode{
 					corev1.ReadWriteOnce,
 				},
-				Resources: corev1.ResourceRequirements{
+				Resources: corev1.VolumeResourceRequirements{
 					Requests: corev1.ResourceList{
 						corev1.ResourceStorage: resource.MustParse("1Gi"),
 					},
@@ -184,7 +184,11 @@ var _ = Describe("preventing PersistentVolume cross-tenant mount", func() {
 						corev1.ReadWriteOnce,
 					},
 					Resources: corev1.VolumeResourceRequirements{
+<<<<<<< HEAD
 						Requests: corev1.VolumeResourceList{
+=======
+						Requests: corev1.ResourceList{
+>>>>>>> 426fc11bd59a51ed3f3466794c229cab08a7fc1f
 							corev1.ResourceStorage: resource.MustParse("1Gi"),
 						},
 					},

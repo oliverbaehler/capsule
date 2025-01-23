@@ -15,6 +15,7 @@ import (
 
 	capsulev1beta2 "github.com/projectcapsule/capsule/api/v1beta2"
 	"github.com/projectcapsule/capsule/pkg/api"
+	capsuleutils "github.com/projectcapsule/capsule/pkg/utils"
 	capsulewebhook "github.com/projectcapsule/capsule/pkg/webhook"
 	"github.com/projectcapsule/capsule/pkg/webhook/utils"
 )
@@ -25,7 +26,7 @@ func UserMetadataHandler() capsulewebhook.Handler {
 	return &userMetadataHandler{}
 }
 
-func (r *userMetadataHandler) OnCreate(client client.Client, decoder *admission.Decoder, recorder record.EventRecorder) capsulewebhook.Func {
+func (r *userMetadataHandler) OnCreate(client client.Client, decoder admission.Decoder, recorder record.EventRecorder) capsulewebhook.Func {
 	return func(ctx context.Context, req admission.Request) *admission.Response {
 		ns := &corev1.Namespace{}
 		if err := decoder.Decode(req, ns); err != nil {
@@ -33,7 +34,12 @@ func (r *userMetadataHandler) OnCreate(client client.Client, decoder *admission.
 		}
 
 		tnt := &capsulev1beta2.Tenant{}
+
 		for _, objectRef := range ns.ObjectMeta.OwnerReferences {
+			if !capsuleutils.IsTenantOwnerReference(objectRef) {
+				continue
+			}
+
 			// retrieving the selected Tenant
 			if err := client.Get(ctx, types.NamespacedName{Name: objectRef.Name}, tnt); err != nil {
 				return utils.ErroredResponse(err)
@@ -64,13 +70,13 @@ func (r *userMetadataHandler) OnCreate(client client.Client, decoder *admission.
 	}
 }
 
-func (r *userMetadataHandler) OnDelete(client.Client, *admission.Decoder, record.EventRecorder) capsulewebhook.Func {
+func (r *userMetadataHandler) OnDelete(client.Client, admission.Decoder, record.EventRecorder) capsulewebhook.Func {
 	return func(context.Context, admission.Request) *admission.Response {
 		return nil
 	}
 }
 
-func (r *userMetadataHandler) OnUpdate(client client.Client, decoder *admission.Decoder, recorder record.EventRecorder) capsulewebhook.Func {
+func (r *userMetadataHandler) OnUpdate(client client.Client, decoder admission.Decoder, recorder record.EventRecorder) capsulewebhook.Func {
 	return func(ctx context.Context, req admission.Request) *admission.Response {
 		oldNs := &corev1.Namespace{}
 		if err := decoder.DecodeRaw(req.OldObject, oldNs); err != nil {
@@ -83,7 +89,12 @@ func (r *userMetadataHandler) OnUpdate(client client.Client, decoder *admission.
 		}
 
 		tnt := &capsulev1beta2.Tenant{}
+
 		for _, objectRef := range newNs.ObjectMeta.OwnerReferences {
+			if !capsuleutils.IsTenantOwnerReference(objectRef) {
+				continue
+			}
+
 			// retrieving the selected Tenant
 			if err := client.Get(ctx, types.NamespacedName{Name: objectRef.Name}, tnt); err != nil {
 				return utils.ErroredResponse(err)

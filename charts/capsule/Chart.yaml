@@ -4,6 +4,12 @@ description: A Helm chart to deploy the Capsule Operator for easily implementing
   managing, and maintaining mutitenancy and access control in Kubernetes.
 home: https://github.com/projectcapsule/capsule
 icon: https://github.com/projectcapsule/capsule/raw/main/assets/logo/capsule_small.png
+dependencies:
+  - name: capsule-proxy
+    version: 0.8.1
+    repository: "oci://ghcr.io/projectcapsule/charts"
+    condition: proxy.enabled
+    alias: proxy
 keywords:
 - kubernetes
 - operator
@@ -18,10 +24,9 @@ maintainers:
 name: capsule
 sources:
 - https://github.com/projectcapsule/capsule
-# The version is overwritten by the release workflow.
+# Note: The version is overwritten by the release workflow.
 version: 0.6.0
-# This is the version number of the application being deployed.
-# This version number should be incremented each time you make changes to the application.
+# Note: The version is overwritten by the release workflow.
 appVersion: 0.5.0
 annotations:
   artifacthub.io/operator: "true"
@@ -33,9 +38,9 @@ annotations:
       email: cncf-capsule-maintainers@lists.cncf.io
   artifacthub.io/links: |
     - name: Documentation
-      url: https://capsule.clastix.io/
-# artifacthub.io/changes: |
-#   - kind: added
-#     description: artifacthub annotations
-#   - kind: changed
-#     description: maintainers contact
+      url: https://projectcapsule.dev/
+  artifacthub.io/changes: |
+    - kind: fixed
+      description: added scope for mutating webhook configurations
+    - kind: changed
+      description: moved job configuration from jobs to global.jobs.kubectl

@@ -15,6 +15,7 @@ import (
 
 	capsulev1beta2 "github.com/projectcapsule/capsule/api/v1beta2"
 	"github.com/projectcapsule/capsule/pkg/configuration"
+	capsuleutils "github.com/projectcapsule/capsule/pkg/utils"
 	capsulewebhook "github.com/projectcapsule/capsule/pkg/webhook"
 	"github.com/projectcapsule/capsule/pkg/webhook/utils"
 )
@@ -27,7 +28,7 @@ func FreezeHandler(configuration configuration.Configuration) capsulewebhook.Han
 	return &freezedHandler{configuration: configuration}
 }
 
-func (r *freezedHandler) OnCreate(client client.Client, decoder *admission.Decoder, recorder record.EventRecorder) capsulewebhook.Func {
+func (r *freezedHandler) OnCreate(client client.Client, decoder admission.Decoder, recorder record.EventRecorder) capsulewebhook.Func {
 	return func(ctx context.Context, req admission.Request) *admission.Response {
 		ns := &corev1.Namespace{}
 		if err := decoder.Decode(req, ns); err != nil {
@@ -35,6 +36,10 @@ func (r *freezedHandler) OnCreate(client client.Client, decoder *admission.Decod
 		}
 
 		for _, objectRef := range ns.ObjectMeta.OwnerReferences {
+			if !capsuleutils.IsTenantOwnerReference(objectRef) {
+				continue
+			}
+
 			// retrieving the selected Tenant
 			tnt := &capsulev1beta2.Tenant{}
 			if err := client.Get(ctx, types.NamespacedName{Name: objectRef.Name}, tnt); err != nil {
@@ -54,7 +59,7 @@ func (r *freezedHandler) OnCreate(client client.Client, decoder *admission.Decod
 	}
 }
 
-func (r *freezedHandler) OnDelete(c client.Client, _ *admission.Decoder, recorder record.EventRecorder) capsulewebhook.Func {
+func (r *freezedHandler) OnDelete(c client.Client, _ admission.Decoder, recorder record.EventRecorder) capsulewebhook.Func {
 	return func(ctx context.Context, req admission.Request) *admission.Response {
 		tntList := &capsulev1beta2.TenantList{}
 		if err := c.List(ctx, tntList, client.MatchingFieldsSelector{
@@ -81,7 +86,7 @@ func (r *freezedHandler) OnDelete(c client.Client, _ *admission.Decoder, recorde
 	}
 }
 
-func (r *freezedHandler) OnUpdate(c client.Client, decoder *admission.Decoder, recorder record.EventRecorder) capsulewebhook.Func {
+func (r *freezedHandler) OnUpdate(c client.Client, decoder admission.Decoder, recorder record.EventRecorder) capsulewebhook.Func {
 	return func(ctx context.Context, req admission.Request) *admission.Response {
 		ns := &corev1.Namespace{}
 		if err := decoder.Decode(req, ns); err != nil {

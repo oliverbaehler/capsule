@@ -7,8 +7,11 @@ This is a list of companies that have adopted Capsule, feel free to open a Pull-
 ### [Bedag Informatik AG](https://www.bedag.ch/)
 ![Bedag](https://www.bedag.ch/wGlobal/wGlobal/layout/images/logo.svg)
 
-### [EPAM Delivery Platform](https://epam.github.io/edp-install/)
-![EPAM Delivery Platform](https://raw.githubusercontent.com/epam/edp-install/master/docs/assets/edp-logo-150x150-black.png)
+### [Department of Defense](https://www.defense.gov/)
+![United States Department of Defense](https://www.access-board.gov/images/dod-seal.png)
+
+### [KubeRocketCI](https://docs.kuberocketci.io/)
+![KubeRocketCI](https://raw.githubusercontent.com/epam/edp-install/master/docs/assets/krci-logo-267×150-white.png)
 
 ### [Fastweb](https://www.fastweb.it/)
 ![Fastweb](https://www.fastweb.it/grandi-aziende/gfx/common/logo-fastweb-header.svg)
@@ -24,6 +27,9 @@ This is a list of companies that have adopted Capsule, feel free to open a Pull-
 
 ### [Reevo](https://www.reevo.it/)
 ![Reevo Cloud and CyberSecurity](https://www.dropbox.com/s/x3q6r0oqstgvtdr/Logo_ReeVo_270x200px.svg)
+
+### [Seeweb](https://seeweb.it/en)
+![Seeweb x Serverless GPU](https://www.seeweb.it/assets/images/logo-seeweb.svg)
 
 ### [University of Torino](https://www.unito.it)
 ![University of Torino](https://www.unito.it/sites/all/themes/bsunito/img/logo_new_2022.svg)

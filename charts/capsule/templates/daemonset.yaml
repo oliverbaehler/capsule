@@ -1,4 +1,5 @@
-{{- if eq .Values.manager.kind "DaemonSet" }}
+{{- if not $.Values.crds.exclusive }}
+  {{- if eq .Values.manager.kind "DaemonSet" }}
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -63,7 +64,7 @@ spec:
           - --webhook-port={{ .Values.manager.webhookPort }}
           - --enable-leader-election
           - --zap-log-level={{ default 4 .Values.manager.options.logLevel }}
-          - --configuration-name=default
+          - --configuration-name={{ .Values.manager.options.capsuleConfiguration }}
           image: {{ include "capsule.managerFullyQualifiedDockerImage" . }}
           imagePullPolicy: {{ .Values.manager.image.pullPolicy }}
           env:
@@ -90,4 +91,5 @@ spec:
             {{- toYaml .Values.manager.resources | nindent 12 }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+  {{- end }}
 {{- end }}

@@ -5,10 +5,10 @@ package rbac
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/go-logr/logr"
-	"github.com/hashicorp/go-multierror"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -39,24 +39,23 @@ func (r *Manager) SetupWithManager(ctx context.Context, mgr ctrl.Manager, config
 		For(&rbacv1.ClusterRole{}, namesPredicate).
 		Complete(r)
 	if crErr != nil {
-		err = multierror.Append(err, crErr)
+		err = errors.Join(err, crErr)
 	}
 
 	crbErr := ctrl.NewControllerManagedBy(mgr).
 		For(&rbacv1.ClusterRoleBinding{}, namesPredicate).
 		Watches(&capsulev1beta2.CapsuleConfiguration{}, handler.Funcs{
-			UpdateFunc: func(ctx context.Context, updateEvent event.UpdateEvent, limitingInterface workqueue.RateLimitingInterface) {
+			UpdateFunc: func(ctx context.Context, updateEvent event.TypedUpdateEvent[client.Object], limitingInterface workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 				if updateEvent.ObjectNew.GetName() == configurationName {
 					if crbErr := r.EnsureClusterRoleBindings(ctx); crbErr != nil {
 						r.Log.Error(err, "cannot update ClusterRoleBinding upon CapsuleConfiguration update")
 					}
 				}
 			},
-		}).
-		Complete(r)
+		}).Complete(r)
 
 	if crbErr != nil {
-		err = multierror.Append(err, crbErr)
+		err = errors.Join(err, crbErr)
 	}
 
 	return

@@ -37,25 +37,25 @@ func (h *runtimeClass) class(ctx context.Context, c client.Client, name string) 
 	return obj, nil
 }
 
-func (h *runtimeClass) OnCreate(c client.Client, decoder *admission.Decoder, recorder record.EventRecorder) capsulewebhook.Func {
+func (h *runtimeClass) OnCreate(c client.Client, decoder admission.Decoder, recorder record.EventRecorder) capsulewebhook.Func {
 	return func(ctx context.Context, req admission.Request) *admission.Response {
 		return h.validate(ctx, c, decoder, recorder, req)
 	}
 }
 
-func (h *runtimeClass) OnDelete(client.Client, *admission.Decoder, record.EventRecorder) capsulewebhook.Func {
+func (h *runtimeClass) OnDelete(client.Client, admission.Decoder, record.EventRecorder) capsulewebhook.Func {
 	return func(context.Context, admission.Request) *admission.Response {
 		return nil
 	}
 }
 
-func (h *runtimeClass) OnUpdate(client.Client, *admission.Decoder, record.EventRecorder) capsulewebhook.Func {
+func (h *runtimeClass) OnUpdate(client.Client, admission.Decoder, record.EventRecorder) capsulewebhook.Func {
 	return func(context.Context, admission.Request) *admission.Response {
 		return nil
 	}
 }
 
-func (h *runtimeClass) validate(ctx context.Context, c client.Client, decoder *admission.Decoder, recorder record.EventRecorder, req admission.Request) *admission.Response {
+func (h *runtimeClass) validate(ctx context.Context, c client.Client, decoder admission.Decoder, recorder record.EventRecorder, req admission.Request) *admission.Response {
 	pod := &corev1.Pod{}
 	if err := decoder.Decode(req, pod); err != nil {
 		return utils.ErroredResponse(err)
@@ -88,8 +88,8 @@ func (h *runtimeClass) validate(ctx context.Context, c client.Client, decoder *a
 	case allowed == nil:
 		// Enforcement is not in place, skipping it at all
 		return nil
-	case len(runtimeClassName) == 0:
-		// We don't have to force Pod to specify a RuntimeClass
+	case len(runtimeClassName) == 0 || runtimeClassName == allowed.Default:
+		// Delegating mutating webhook to specify a default RuntimeClass
 		return nil
 	case !allowed.MatchSelectByName(class):
 		recorder.Eventf(tnt, corev1.EventTypeWarning, "ForbiddenRuntimeClass", "Pod %s/%s is using Runtime Class %s is forbidden for the current Tenant", pod.Namespace, pod.Name, runtimeClassName)

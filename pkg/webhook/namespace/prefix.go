@@ -16,6 +16,7 @@ import (
 
 	capsulev1beta2 "github.com/projectcapsule/capsule/api/v1beta2"
 	"github.com/projectcapsule/capsule/pkg/configuration"
+	capsuleutils "github.com/projectcapsule/capsule/pkg/utils"
 	capsulewebhook "github.com/projectcapsule/capsule/pkg/webhook"
 	"github.com/projectcapsule/capsule/pkg/webhook/utils"
 )
@@ -30,7 +31,7 @@ func PrefixHandler(configuration configuration.Configuration) capsulewebhook.Han
 	}
 }
 
-func (r *prefixHandler) OnCreate(clt client.Client, decoder *admission.Decoder, recorder record.EventRecorder) capsulewebhook.Func {
+func (r *prefixHandler) OnCreate(clt client.Client, decoder admission.Decoder, recorder record.EventRecorder) capsulewebhook.Func {
 	return func(ctx context.Context, req admission.Request) *admission.Response {
 		ns := &corev1.Namespace{}
 		if err := decoder.Decode(req, ns); err != nil {
@@ -49,9 +50,18 @@ func (r *prefixHandler) OnCreate(clt client.Client, decoder *admission.Decoder, 
 			tnt := &capsulev1beta2.Tenant{}
 
 			for _, or := range ns.ObjectMeta.OwnerReferences {
+				if !capsuleutils.IsTenantOwnerReference(or) {
+					continue
+				}
+
 				// retrieving the selected Tenant
 				if err := clt.Get(ctx, types.NamespacedName{Name: or.Name}, tnt); err != nil {
 					return utils.ErroredResponse(err)
+				}
+
+				// Check for Tenant-level ForceTenantPrefix override
+				if tnt.Spec.ForceTenantPrefix != nil && !*tnt.Spec.ForceTenantPrefix {
+					return nil
 				}
 
 				if e := fmt.Sprintf("%s-%s", tnt.GetName(), ns.GetName()); !strings.HasPrefix(ns.GetName(), fmt.Sprintf("%s-", tnt.GetName())) {
@@ -68,13 +78,13 @@ func (r *prefixHandler) OnCreate(clt client.Client, decoder *admission.Decoder, 
 	}
 }
 
-func (r *prefixHandler) OnDelete(client.Client, *admission.Decoder, record.EventRecorder) capsulewebhook.Func {
+func (r *prefixHandler) OnDelete(client.Client, admission.Decoder, record.EventRecorder) capsulewebhook.Func {
 	return func(context.Context, admission.Request) *admission.Response {
 		return nil
 	}
 }
 
-func (r *prefixHandler) OnUpdate(client.Client, *admission.Decoder, record.EventRecorder) capsulewebhook.Func {
+func (r *prefixHandler) OnUpdate(client.Client, admission.Decoder, record.EventRecorder) capsulewebhook.Func {
 	return func(context.Context, admission.Request) *admission.Response {
 		return nil
 	}

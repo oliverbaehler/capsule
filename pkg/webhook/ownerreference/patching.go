@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -36,27 +38,38 @@ func Handler(cfg configuration.Configuration) capsulewebhook.Handler {
 	}
 }
 
-func (h *handler) OnCreate(client client.Client, decoder *admission.Decoder, recorder record.EventRecorder) capsulewebhook.Func {
+func (h *handler) OnCreate(client client.Client, decoder admission.Decoder, recorder record.EventRecorder) capsulewebhook.Func {
 	return func(ctx context.Context, req admission.Request) *admission.Response {
 		return h.setOwnerRef(ctx, req, client, decoder, recorder)
 	}
 }
 
-func (h *handler) OnDelete(client.Client, *admission.Decoder, record.EventRecorder) capsulewebhook.Func {
+func (h *handler) OnDelete(client.Client, admission.Decoder, record.EventRecorder) capsulewebhook.Func {
 	return func(context.Context, admission.Request) *admission.Response {
 		return nil
 	}
 }
 
-func (h *handler) OnUpdate(_ client.Client, decoder *admission.Decoder, _ record.EventRecorder) capsulewebhook.Func {
-	return func(_ context.Context, req admission.Request) *admission.Response {
+func (h *handler) OnUpdate(c client.Client, decoder admission.Decoder, recorder record.EventRecorder) capsulewebhook.Func {
+	return func(ctx context.Context, req admission.Request) *admission.Response {
 		oldNs := &corev1.Namespace{}
 		if err := decoder.DecodeRaw(req.OldObject, oldNs); err != nil {
 			return utils.ErroredResponse(err)
 		}
 
-		if len(oldNs.OwnerReferences) == 0 {
-			return nil
+		tntList := &capsulev1beta2.TenantList{}
+		if err := c.List(ctx, tntList, client.MatchingFieldsSelector{
+			Selector: fields.OneTermEqualSelector(".status.namespaces", oldNs.Name),
+		}); err != nil {
+			return utils.ErroredResponse(err)
+		}
+
+		if !h.namespaceIsOwned(oldNs, tntList, req) {
+			recorder.Eventf(oldNs, corev1.EventTypeWarning, "OfflimitNamespace", "Namespace %s can not be patched", oldNs.GetName())
+
+			response := admission.Denied("Denied patch request for this namespace")
+
+			return &response
 		}
 
 		newNs := &corev1.Namespace{}
@@ -71,7 +84,21 @@ func (h *handler) OnUpdate(_ client.Client, decoder *admission.Decoder, _ record
 			return &response
 		}
 
-		newNs.OwnerReferences = oldNs.OwnerReferences
+		var refs []metav1.OwnerReference
+
+		for _, ref := range oldNs.OwnerReferences {
+			if capsuleutils.IsTenantOwnerReference(ref) {
+				refs = append(refs, ref)
+			}
+		}
+
+		for _, ref := range newNs.OwnerReferences {
+			if !capsuleutils.IsTenantOwnerReference(ref) {
+				refs = append(refs, ref)
+			}
+		}
+
+		newNs.OwnerReferences = refs
 
 		c, err := json.Marshal(newNs)
 		if err != nil {
@@ -86,7 +113,23 @@ func (h *handler) OnUpdate(_ client.Client, decoder *admission.Decoder, _ record
 	}
 }
 
-func (h *handler) setOwnerRef(ctx context.Context, req admission.Request, client client.Client, decoder *admission.Decoder, recorder record.EventRecorder) *admission.Response {
+func (h *handler) namespaceIsOwned(ns *corev1.Namespace, tenantList *capsulev1beta2.TenantList, req admission.Request) bool {
+	for _, tenant := range tenantList.Items {
+		for _, ownerRef := range ns.OwnerReferences {
+			if !capsuleutils.IsTenantOwnerReference(ownerRef) {
+				continue
+			}
+
+			if ownerRef.UID == tenant.UID && utils.IsTenantOwner(tenant.Spec.Owners, req.UserInfo) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func (h *handler) setOwnerRef(ctx context.Context, req admission.Request, client client.Client, decoder admission.Decoder, recorder record.EventRecorder) *admission.Response {
 	ns := &corev1.Namespace{}
 	if err := decoder.Decode(req, ns); err != nil {
 		response := admission.Errored(http.StatusBadRequest, err)
@@ -101,6 +144,7 @@ func (h *handler) setOwnerRef(ctx context.Context, req admission.Request, client
 		return &response
 	}
 	// If we already had TenantName label on NS -> assign to it
+
 	if label, ok := ns.ObjectMeta.Labels[ln]; ok {
 		// retrieving the selected Tenant
 		tnt := &capsulev1beta2.Tenant{}
@@ -116,6 +160,10 @@ func (h *handler) setOwnerRef(ctx context.Context, req admission.Request, client
 			response := admission.Denied("Cannot assign the desired namespace to a non-owned Tenant")
 
 			return &response
+		}
+		// Check if namespace needs Tenant name prefix
+		if errResponse := h.validateNamespacePrefix(ns, tnt); errResponse != nil {
+			return errResponse
 		}
 		// Patching the response
 		response := h.patchResponseForOwnerRef(tnt, ns, recorder)
@@ -178,6 +226,11 @@ func (h *handler) setOwnerRef(ctx context.Context, req admission.Request, client
 	}
 
 	if len(tenants) == 1 {
+		// Check if namespace needs Tenant name prefix
+		if errResponse := h.validateNamespacePrefix(ns, &tenants[0]); errResponse != nil {
+			return errResponse
+		}
+
 		response := h.patchResponseForOwnerRef(&tenants[0], ns, recorder)
 
 		return &response
@@ -212,7 +265,7 @@ func (h *handler) patchResponseForOwnerRef(tenant *capsulev1beta2.Tenant, ns *co
 		return admission.Errored(http.StatusInternalServerError, err)
 	}
 
-	if err = controllerutil.SetControllerReference(tenant, ns, scheme); err != nil {
+	if err = controllerutil.SetOwnerReference(tenant, ns, scheme); err != nil {
 		recorder.Eventf(tenant, corev1.EventTypeWarning, "Error", "Namespace %s cannot be assigned to the desired Tenant", ns.GetName())
 
 		return admission.Errored(http.StatusInternalServerError, err)
@@ -236,6 +289,19 @@ func (h *handler) listTenantsForOwnerKind(ctx context.Context, ownerKind string,
 	err := clt.List(ctx, tntList, fields)
 
 	return tntList, err
+}
+
+func (h *handler) validateNamespacePrefix(ns *corev1.Namespace, tenant *capsulev1beta2.Tenant) *admission.Response {
+	// Check if ForceTenantPrefix is true
+	if tenant.Spec.ForceTenantPrefix != nil && *tenant.Spec.ForceTenantPrefix {
+		if !strings.HasPrefix(ns.GetName(), fmt.Sprintf("%s-", tenant.GetName())) {
+			response := admission.Denied(fmt.Sprintf("The Namespace name must start with '%s-' when ForceTenantPrefix is enabled in the Tenant.", tenant.GetName()))
+
+			return &response
+		}
+	}
+
+	return nil
 }
 
 type sortedTenants []capsulev1beta2.Tenant
