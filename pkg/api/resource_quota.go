@@ -21,3 +21,8 @@ type ResourceQuotaSpec struct {
 	Scope ResourceQuotaScope         `json:"scope,omitempty"`
 	Items []corev1.ResourceQuotaSpec `json:"items,omitempty"`
 }
+
+type ResourceQuotaItemsSpec struct {
+	// Define if the Resource Budget should compute resource across all Namespaces in the Tenant or individually per cluster. Default is Tenant
+	Items map[string]corev1.ResourceQuotaSpec `json:"items,omitempty"`
+}

@@ -50,8 +50,6 @@ func (h *statusHandler) OnUpdate(c client.Client, decoder admission.Decoder, rec
 }
 
 func (h *statusHandler) validate(ctx context.Context, c client.Client, decoder admission.Decoder, recorder record.EventRecorder, req admission.Request) *admission.Response {
-	h.log.V(5).Info("RECEIVED Mutating ResourceQuota update")
-
 	// Focus on status subresource updates
 	//if req.SubResource != "status" {
 	//	return nil
@@ -106,7 +104,6 @@ func (h *statusHandler) validate(ctx context.Context, c client.Client, decoder a
 		}
 
 		// Calculate changes in resource usage
-		//usedResources := quota.Status.Used
 		tenantQuota, exists := tenant.Status.Quota[index]
 		if !exists {
 			h.log.V(5).Info("No quota entry found in tenant status; initializing", "index", index)
