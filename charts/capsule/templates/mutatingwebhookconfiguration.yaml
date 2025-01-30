@@ -112,7 +112,7 @@ webhooks:
     - v1
     - v1beta1
   clientConfig:
-    {{- include "capsule.webhooks.service" (dict "path" "/quotas/mutation" "ctx" $) | nindent 4 }}
+    {{- include "capsule.webhooks.service" (dict "path" "/globalquota/mutation" "ctx" $) | nindent 4 }}
   failurePolicy: {{ .failurePolicy }}
   matchPolicy: Equivalent
   name: quotas.projectcapsule.dev

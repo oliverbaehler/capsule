@@ -1,6 +1,6 @@
 // Copyright 2020-2023 Project Capsule Authors.
 // SPDX-License-Identifier: Apache-2.0
-package quota
+package globalquota
 
 import (
 	"context"
@@ -70,10 +70,7 @@ func (r *validationHandler) handle(ctx context.Context, req admission.Request, c
 		return false, err
 	}
 
-	objectLabel, err := capsuleutils.GetTypeLabel(&corev1.ResourceQuota{})
-	if err != nil {
-		return
-	}
+	objectLabel := capsuleutils.GetGlobalResourceQuotaTypeLabel()
 
 	labels := np.GetLabels()
 	if _, ok := labels[objectLabel]; ok {

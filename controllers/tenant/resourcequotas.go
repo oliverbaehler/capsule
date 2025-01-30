@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"sync"
 
 	"golang.org/x/sync/errgroup"
 	corev1 "k8s.io/api/core/v1"
@@ -69,9 +68,6 @@ func (r *Manager) syncResourceQuotas(ctx context.Context, tenant *capsulev1beta2
 	if tenant.Spec.ResourceQuota.Scope == api.ResourceQuotaScopeTenant {
 		group := new(errgroup.Group)
 
-		tenantQuotaStatus := make(map[string]capsulev1beta2.TenantQuotaStatus)
-		mu := &sync.Mutex{}
-
 		for i, q := range tenant.Spec.ResourceQuota.Items {
 			index, resourceQuota := i, q
 
@@ -104,10 +100,6 @@ func (r *Manager) syncResourceQuotas(ctx context.Context, tenant *capsulev1beta2
 					return scopeErr
 				}
 
-				localQuotaStatus := capsulev1beta2.TenantQuotaStatus{
-					Usage: &corev1.ResourceQuotaStatus{Used: corev1.ResourceList{}, Hard: corev1.ResourceList{}},
-				}
-
 				// Iterating over all the options declared for the ResourceQuota,
 				// summing all the used quota across different Namespaces to determinate
 				// if we're hitting a Hard quota at Tenant level.
@@ -137,9 +129,6 @@ func (r *Manager) syncResourceQuotas(ctx context.Context, tenant *capsulev1beta2
 						name.String(),
 						strconv.Itoa(index),
 					).Set(float64(hardQuota.MilliValue()) / 1000)
-
-					localQuotaStatus.Usage.Used[name] = quantity
-					localQuotaStatus.Usage.Hard[name] = hardQuota
 
 					switch quantity.Cmp(resourceQuota.Hard[name]) {
 					case 0:
@@ -194,26 +183,12 @@ func (r *Manager) syncResourceQuotas(ctx context.Context, tenant *capsulev1beta2
 					}
 				}
 
-				mu.Lock()
-				tenantQuotaStatus[strconv.Itoa(index)] = localQuotaStatus
-				mu.Unlock()
-
 				return
 			})
 		}
 		// Waiting the update of all ResourceQuotas
 		if err = group.Wait(); err != nil {
 			return
-		}
-
-		// Update the tenant's status with the computed quota information
-		tenant.Status.Quota = tenantQuotaStatus
-		if err := r.Status().Update(ctx, tenant); err != nil {
-			r.Log.Info("updating status", "quota", tenantQuotaStatus)
-
-			r.Log.Error(err, "Failed to update tenant status")
-
-			return err
 		}
 
 	}

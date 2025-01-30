@@ -20,7 +20,7 @@ func (w *quotamutation) GetHandlers() []capsulewebhook.Handler {
 }
 
 func (w *quotamutation) GetPath() string {
-	return "/quotas/mutation"
+	return "/globalquota/mutation"
 }
 
 type quotaValidation struct {
@@ -36,5 +36,5 @@ func (w *quotaValidation) GetHandlers() []capsulewebhook.Handler {
 }
 
 func (w *quotaValidation) GetPath() string {
-	return "/quotas/validation"
+	return "/globalquota/validation"
 }

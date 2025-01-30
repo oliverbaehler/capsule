@@ -1,7 +1,7 @@
 // Copyright 2020-2023 Project Capsule Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-package quota
+package globalquota
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -18,6 +18,7 @@ import (
 
 	"github.com/go-logr/logr"
 	capsulev1beta2 "github.com/projectcapsule/capsule/api/v1beta2"
+	"github.com/projectcapsule/capsule/pkg/api"
 	capsuleutils "github.com/projectcapsule/capsule/pkg/utils"
 	capsulewebhook "github.com/projectcapsule/capsule/pkg/webhook"
 	"github.com/projectcapsule/capsule/pkg/webhook/utils"
@@ -50,68 +51,62 @@ func (h *statusHandler) OnUpdate(c client.Client, decoder admission.Decoder, rec
 }
 
 func (h *statusHandler) validate(ctx context.Context, c client.Client, decoder admission.Decoder, recorder record.EventRecorder, req admission.Request) *admission.Response {
-	// Focus on status subresource updates
-	//if req.SubResource != "status" {
-	//	return nil
-	//}
-
 	// Decode the incoming object
 	quota := &corev1.ResourceQuota{}
 	if err := decoder.Decode(req, quota); err != nil {
 		return utils.ErroredResponse(fmt.Errorf("failed to decode new ResourceQuota object: %w", err))
 	}
 
-	// Decode the old object from the request to retrieve its status
-	oldQuota := &corev1.ResourceQuota{}
-	if req.OldObject.Raw != nil {
-		if err := json.Unmarshal(req.OldObject.Raw, oldQuota); err != nil {
-			return utils.ErroredResponse(fmt.Errorf("failed to decode old ResourceQuota object: %w", err))
-		}
-	}
-
-	indexLabel, err := capsuleutils.GetTypeLabel(&corev1.ResourceQuota{})
+	// Get Item within Resource Quota
+	objectLabel, err := capsuleutils.GetTypeLabel(&capsulev1beta2.GlobalResourceQuota{})
 	if err != nil {
 		return nil
 	}
 
-	index, ok := quota.GetLabels()[indexLabel]
-	if !ok || index == "" {
+	// Not a global quota resourcequota
+	labels := quota.GetLabels()
+	globalQuotaName, ok := labels[objectLabel]
+	if !ok {
 		return nil
 	}
 
-	h.log.V(7).Info("selected quota", "index", index)
+	// Get Item within Resource Quota
+	indexLabel := capsuleutils.GetGlobalResourceQuotaTypeLabel()
+	item, ok := quota.GetLabels()[indexLabel]
+	if !ok || item == "" {
+		return nil
+	}
 
-	tntList := &capsulev1beta2.TenantList{}
-	if err := c.List(ctx, tntList, client.MatchingFieldsSelector{
-		Selector: fields.OneTermEqualSelector(".status.namespaces", quota.Namespace),
-	}); err != nil {
+	globalQuota := &capsulev1beta2.GlobalResourceQuota{}
+	if err := c.Get(ctx, types.NamespacedName{Name: globalQuotaName}, globalQuota); err != nil {
 		return utils.ErroredResponse(err)
 	}
 
-	if len(tntList.Items) == 0 {
+	// Skip if quota not active
+	if !globalQuota.Spec.Active {
+		h.log.V(5).Info("GlobalQuota is not active", "quota", globalQuota.Name)
 		return nil
 	}
 
-	tenant := tntList.Items[0]
-	h.log.V(5).Info("Retrieved tenant", "tenant", tenant.Name, "namespace", quota.Namespace)
+	h.log.V(7).Info("selected quota", "quota", globalQuota.Name, "item", item)
 
 	// Use retry to handle concurrent updates
 	err = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		// Re-fetch the tenant to get the latest status
-		if err := c.Get(ctx, client.ObjectKey{Name: tenant.Name}, &tenant); err != nil {
-			h.log.Error(err, "Failed to fetch tenant during retry", "tenant", tenant.Name)
+		if err := c.Get(ctx, client.ObjectKey{Name: globalQuota.Name}, globalQuota); err != nil {
+			h.log.Error(err, "Failed to fetch globalquota during retry", "quota", globalQuota.Name)
 			return err
 		}
 
 		// Calculate changes in resource usage
-		tenantQuota, exists := tenant.Status.Quota[index]
+		tenantQuota, exists := globalQuota.Status.Quota[api.Name(item)]
 		if !exists {
-			h.log.V(5).Info("No quota entry found in tenant status; initializing", "index", index)
+			h.log.V(5).Info("No quota entry found in tenant status; initializing", "item", api.Name(item))
 			return nil
 		}
 
-		tenantUsed := tenantQuota.Usage.Used
-		tenantHard := tenantQuota.Usage.Hard
+		tenantUsed := tenantQuota.Used
+		tenantHard := tenantQuota.Hard
 
 		// Adjust the hard limits in the ResourceQuota
 		for resourceName, tenantLimit := range tenantHard {
@@ -139,6 +134,7 @@ func (h *statusHandler) validate(ctx context.Context, c client.Client, decoder a
 					"tenantLimit", tenantLimit.String(),
 					"currentUsage", currentUsage.String(),
 					"namespaceUsage", namespaceUsage.String())
+
 				quota.Spec.Hard[resourceName] = namespaceUsage.DeepCopy()
 				continue
 			}
@@ -153,6 +149,7 @@ func (h *statusHandler) validate(ctx context.Context, c client.Client, decoder a
 			}
 
 			quota.Spec.Hard[resourceName] = adjustedHardLimit
+			quota.Status.Hard[resourceName] = adjustedHardLimit
 
 			h.log.Info("Adjusted ResourceQuota hard limit",
 				"resource", resourceName,
@@ -162,13 +159,13 @@ func (h *statusHandler) validate(ctx context.Context, c client.Client, decoder a
 		}
 
 		// Persist the changes to the tenant's status
-		tenantQuota.Usage.Used = tenantUsed
-		tenant.Status.Quota[index] = tenantQuota
-		if err := c.Status().Update(ctx, &tenant); err != nil {
-			return fmt.Errorf("failed to update tenant status: %w", err)
+		tenantQuota.Used = tenantUsed
+		globalQuota.Status.Quota[api.Name(item)] = tenantQuota
+		if err := c.Status().Update(ctx, globalQuota); err != nil {
+			return fmt.Errorf("failed to update GlobalQuota status: %w", err)
 		}
 
-		h.log.Info("Successfully updated tenant status", "tenant", tenant.Name, "quota", index)
+		h.log.Info("Successfully updated tenant status", "GlobalQuota", globalQuota.Name, "quota", api.Name(item))
 		return nil
 	})
 
