@@ -6,7 +6,6 @@ package globalquota
 import (
 	"context"
 	"fmt"
-	"sync"
 
 	"golang.org/x/sync/errgroup"
 	corev1 "k8s.io/api/core/v1"
@@ -14,7 +13,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/util/retry"
@@ -54,6 +52,41 @@ func (r *Manager) syncResourceQuotas(
 	}
 
 	typeLabel = utils.GetGlobalResourceQuotaTypeLabel()
+
+	// Initialize on empty status
+	if quota.Status.Quota == nil {
+		quota.Status.Quota = make(capsulev1beta2.GlobalResourceQuotaStatusQuota)
+	}
+
+	// Process each item (quota index)
+	for index, resourceQuota := range quota.Spec.Items {
+		// Fetch the latest tenant quota status
+		itemUsage, exists := quota.Status.Quota[api.Name(index)]
+		if !exists {
+			// Initialize Object
+			quota.Status.Quota[api.Name(index)] = &corev1.ResourceQuotaStatus{
+				Used: corev1.ResourceList{},
+				Hard: corev1.ResourceList{},
+			}
+
+			itemUsage = &corev1.ResourceQuotaStatus{
+				Used: corev1.ResourceList{},
+				Hard: resourceQuota.Hard,
+			}
+		}
+
+		// ✅ Update the Used state in the global quota
+		quota.Status.Quota[api.Name(index)] = itemUsage
+	}
+
+	//// Update the tenant's status with the computed quota information
+	if err := r.Status().Update(ctx, quota); err != nil {
+		r.Log.Info("updating status", "quota", quota.Status)
+
+		r.Log.Error(err, "Failed to update tenant status")
+
+		return err
+	}
 
 	// Remove prior metrics, to avoid cleaning up for metrics of deleted ResourceQuotas
 	metrics.TenantResourceUsage.DeletePartialMatch(map[string]string{"quota": quota.Name})
@@ -132,156 +165,153 @@ func (r *Manager) syncResourceQuotas(
 		})
 	}
 
-	tenantQuotaStatus := capsulev1beta2.GlobalResourceQuotaStatusQuota{}
-	mu := &sync.Mutex{}
-
-	for i, q := range quota.Spec.Items {
-		index, resourceQuota := i, q
-
-		toKeep := sets.New[corev1.ResourceName]()
-		for k := range resourceQuota.Hard {
-			toKeep.Insert(k)
-		}
-
-		group.Go(func() (scopeErr error) {
-			// Calculating the Resource Budget at Tenant scope just if this is put in place.
-			// Requirement to list ResourceQuota of the current Tenant
-			var tntRequirement *labels.Requirement
-
-			if tntRequirement, scopeErr = labels.NewRequirement(quotaLabel, selection.Equals, []string{quota.Name}); scopeErr != nil {
-				r.Log.Error(scopeErr, "Cannot build ResourceQuota Tenant requirement")
-			}
-			// Requirement to list ResourceQuota for the current index
-			var indexRequirement *labels.Requirement
-
-			if indexRequirement, scopeErr = labels.NewRequirement(typeLabel, selection.Equals, []string{index.String()}); scopeErr != nil {
-				r.Log.Error(scopeErr, "Cannot build ResourceQuota index requirement")
-			}
-			// Listing all the ResourceQuota according to the said requirements.
-			// These are required since Capsule is going to sum all the used quota to
-			// sum them and get the Tenant one.
-			list := &corev1.ResourceQuotaList{}
-			if scopeErr = r.List(ctx, list, &client.ListOptions{LabelSelector: labels.NewSelector().Add(*tntRequirement).Add(*indexRequirement)}); scopeErr != nil {
-				r.Log.Error(scopeErr, "Cannot list ResourceQuota", "tenantFilter", tntRequirement.String(), "indexFilter", indexRequirement.String())
-
-				return scopeErr
-			}
-
-			r.Log.Info("ResourceQuota list", "items", len(list.Items))
-
-			localQuotaStatus := &corev1.ResourceQuotaStatus{
-				Used: corev1.ResourceList{},
-				Hard: corev1.ResourceList{},
-			}
-
-			// Iterating over all the options declared for the ResourceQuota,
-			// summing all the used quota across different Namespaces to determinate
-			// if we're hitting a Hard quota at Tenant level.
-			// For this case, we're going to block the Quota setting the Hard as the
-			// used one.
-			for name, hardQuota := range resourceQuota.Hard {
-				r.Log.Info("Desired hard " + name.String() + " quota is " + hardQuota.String())
-
-				// Getting the whole usage across all the Tenant Namespaces
-				var quantity resource.Quantity
-				for _, item := range list.Items {
-					quantity.Add(item.Status.Used[name])
-				}
-
-				r.Log.Info("Computed " + name.String() + " quota for the whole Tenant is " + quantity.String())
-
-				// Expose usage and limit metrics for the resource (name) of the ResourceQuota (index)
-				metrics.GlobalResourceUsage.WithLabelValues(
-					quota.Name,
-					name.String(),
-					index.String(),
-				).Set(float64(quantity.MilliValue()) / 1000)
-
-				metrics.GlobalResourceLimit.WithLabelValues(
-					quota.Name,
-					name.String(),
-					index.String(),
-				).Set(float64(hardQuota.MilliValue()) / 1000)
-
-				localQuotaStatus.Used[name] = quantity
-				localQuotaStatus.Hard[name] = hardQuota
-
-				switch quantity.Cmp(resourceQuota.Hard[name]) {
-				case 0:
-					// The Tenant is matching exactly the Quota:
-					// falling through next case since we have to block further
-					// resource allocations.
-					fallthrough
-				case 1:
-					r.Log.Info("block overprovisioning")
-					// The Tenant is OverQuota:
-					// updating all the related ResourceQuota with the current
-					// used Quota to block further creations.
-					for item := range list.Items {
-						if _, ok := list.Items[item].Status.Used[name]; ok {
-							list.Items[item].Spec.Hard[name] = list.Items[item].Status.Used[name]
-						} else {
-							um := make(map[corev1.ResourceName]resource.Quantity)
-							um[name] = resource.Quantity{}
-							list.Items[item].Spec.Hard = um
-						}
-					}
-				default:
-					r.Log.Info("respecting hard quota")
-					// The Tenant is respecting the Hard quota:
-					// restoring the default one for all the elements,
-					// also for the reconciled one.
-					for item := range list.Items {
-						if list.Items[item].Spec.Hard == nil {
-							list.Items[item].Spec.Hard = map[corev1.ResourceName]resource.Quantity{}
-						}
-
-						// Effectively this subtracts the usage from all other namespaces in the tenant from the desired tenant hard quota.
-						// Thus we can determine, how much is left in this resourcequota (item) for the current resource (name).
-						// We use this remaining quota at the tenant level, to update the hard quota for the current namespace.
-
-						newHard := hardQuota                            // start off with desired tenant wide hard quota
-						newHard.Sub(quantity)                           // subtract tenant wide usage
-						newHard.Add(list.Items[item].Status.Used[name]) // add back usage in current ns
-
-						list.Items[item].Spec.Hard[name] = newHard
-
-						for k := range list.Items[item].Spec.Hard {
-							if !toKeep.Has(k) {
-								delete(list.Items[item].Spec.Hard, k)
-							}
-						}
-					}
-				}
-
-				if scopeErr = r.resourceQuotasUpdate(ctx, name, quantity, toKeep, resourceQuota.Hard[name], list.Items...); scopeErr != nil {
-					r.Log.Error(scopeErr, "cannot proceed with outer ResourceQuota")
-
-					return
-				}
-			}
-
-			mu.Lock()
-			tenantQuotaStatus[index] = localQuotaStatus
-			mu.Unlock()
-
-			return
-		})
-	}
-	// Waiting the update of all ResourceQuotas
-	if err = group.Wait(); err != nil {
-		return
-	}
-
-	// Update the tenant's status with the computed quota information
-	quota.Status.Quota = tenantQuotaStatus
-	if err := r.Status().Update(ctx, quota); err != nil {
-		r.Log.Info("updating status", "quota", tenantQuotaStatus)
-
-		r.Log.Error(err, "Failed to update tenant status")
-
-		return err
-	}
+	//tenantQuotaStatus := capsulev1beta2.GlobalResourceQuotaStatusQuota{}
+	//mu := &sync.Mutex{}
+	//
+	//for i, q := range quota.Spec.Items {
+	//	index, resourceQuota := i, q
+	//
+	//	toKeep := sets.New[corev1.ResourceName]()
+	//	for k := range resourceQuota.Hard {
+	//		toKeep.Insert(k)
+	//	}
+	//
+	//	group.Go(func() (scopeErr error) {
+	//		// Calculating the Resource Budget at Tenant scope just if this is put in place.
+	//		// Requirement to list ResourceQuota of the current Tenant
+	//		var tntRequirement *labels.Requirement
+	//
+	//		if tntRequirement, scopeErr = labels.NewRequirement(quotaLabel, selection.Equals, []string{quota.Name}); scopeErr != nil {
+	//			r.Log.Error(scopeErr, "Cannot build ResourceQuota Tenant requirement")
+	//		}
+	//		// Requirement to list ResourceQuota for the current index
+	//		var indexRequirement *labels.Requirement
+	//
+	//		if indexRequirement, scopeErr = labels.NewRequirement(typeLabel, selection.Equals, []string{index.String()}); scopeErr != nil {
+	//			r.Log.Error(scopeErr, "Cannot build ResourceQuota index requirement")
+	//		}
+	//		// Listing all the ResourceQuota according to the said requirements.
+	//		// These are required since Capsule is going to sum all the used quota to
+	//		// sum them and get the Tenant one.
+	//		list := &corev1.ResourceQuotaList{}
+	//		if scopeErr = r.List(ctx, list, &client.ListOptions{LabelSelector: labels.NewSelector().Add(*tntRequirement).Add(*indexRequirement)}); scopeErr != nil {
+	//			r.Log.Error(scopeErr, "Cannot list ResourceQuota", "tenantFilter", tntRequirement.String(), "indexFilter", indexRequirement.String())
+	//
+	//			return scopeErr
+	//		}
+	//
+	//		r.Log.Info("ResourceQuota list", "items", len(list.Items))
+	//
+	//		localQuotaStatus := &corev1.ResourceQuotaStatus{
+	//			Used: corev1.ResourceList{},
+	//			Hard: corev1.ResourceList{},
+	//		}
+	//
+	//		// Iterating over all the options declared for the ResourceQuota,
+	//		// summing all the used quota across different Namespaces to determinate
+	//		// if we're hitting a Hard quota at Tenant level.
+	//		// For this case, we're going to block the Quota setting the Hard as the
+	//		// used one.
+	//		for name, hardQuota := range resourceQuota.Hard {
+	//			r.Log.Info("Desired hard " + name.String() + " quota is " + hardQuota.String())
+	//
+	//			// Getting the whole usage across all the Tenant Namespaces
+	//			var quantity resource.Quantity
+	//			for _, item := range list.Items {
+	//				quantity.Add(item.Status.Used[name])
+	//			}
+	//
+	//			r.Log.Info("Computed " + name.String() + " quota for the whole Tenant is " + quantity.String())
+	//
+	//			// Expose usage and limit metrics for the resource (name) of the ResourceQuota (index)
+	//			metrics.GlobalResourceUsage.WithLabelValues(
+	//				quota.Name,
+	//				name.String(),
+	//				index.String(),
+	//			).Set(float64(quantity.MilliValue()) / 1000)
+	//
+	//			metrics.GlobalResourceLimit.WithLabelValues(
+	//				quota.Name,
+	//				name.String(),
+	//				index.String(),
+	//			).Set(float64(hardQuota.MilliValue()) / 1000)
+	//
+	//			localQuotaStatus.Used[name] = quantity
+	//			localQuotaStatus.Hard[name] = hardQuota
+	//
+	//			switch quantity.Cmp(resourceQuota.Hard[name]) {
+	//			case 0:
+	//				// The Tenant is matching exactly the Quota:
+	//				// falling through next case since we have to block further
+	//				// resource allocations.
+	//				fallthrough
+	//			case 1:
+	//				r.Log.Info("block overprovisioning")
+	//				// The Tenant is OverQuota:
+	//				// updating all the related ResourceQuota with the current
+	//				// used Quota to block further creations.
+	//				for item := range list.Items {
+	//					if _, ok := list.Items[item].Status.Used[name]; ok {
+	//						list.Items[item].Spec.Hard[name] = list.Items[item].Status.Used[name]
+	//					} else {
+	//						um := make(map[corev1.ResourceName]resource.Quantity)
+	//						um[name] = resource.Quantity{}
+	//						list.Items[item].Spec.Hard = um
+	//					}
+	//				}
+	//			default:
+	//				r.Log.Info("respecting hard quota")
+	//				// The Tenant is respecting the Hard quota:
+	//				// restoring the default one for all the elements,
+	//				// also for the reconciled one.
+	//				for item := range list.Items {
+	//					if list.Items[item].Spec.Hard == nil {
+	//						list.Items[item].Spec.Hard = map[corev1.ResourceName]resource.Quantity{}
+	//					}
+	//
+	//					// Effectively this subtracts the usage from all other namespaces in the tenant from the desired tenant hard quota.
+	//					// Thus we can determine, how much is left in this resourcequota (item) for the current resource (name).
+	//					// We use this remaining quota at the tenant level, to update the hard quota for the current namespace.
+	//
+	//					newHard := hardQuota                            // start off with desired tenant wide hard quota
+	//					newHard.Sub(quantity)                           // subtract tenant wide usage
+	//					newHard.Add(list.Items[item].Status.Used[name]) // add back usage in current ns
+	//
+	//					list.Items[item].Spec.Hard[name] = newHard
+	//
+	//					for k := range list.Items[item].Spec.Hard {
+	//						if !toKeep.Has(k) {
+	//							delete(list.Items[item].Spec.Hard, k)
+	//						}
+	//					}
+	//				}
+	//			}
+	//
+	//			if scopeErr = r.resourceQuotasUpdate(ctx, name, quantity, toKeep, resourceQuota.Hard[name], list.Items...); scopeErr != nil {
+	//				r.Log.Error(scopeErr, "cannot proceed with outer ResourceQuota")
+	//
+	//				return
+	//			}
+	//		}
+	//
+	//		mu.Lock()
+	//		tenantQuotaStatus[index] = localQuotaStatus
+	//		mu.Unlock()
+	//
+	//		return
+	//	})
+	//}
+	//
+	//// Update the tenant's status with the computed quota information
+	//quota.Status.Quota = tenantQuotaStatus
+	//if err := r.Status().Update(ctx, quota); err != nil {
+	//	r.Log.Info("updating status", "quota", tenantQuotaStatus)
+	//
+	//	r.Log.Error(err, "Failed to update tenant status")
+	//
+	//	return err
+	//}
+	//
 
 	return group.Wait()
 }
