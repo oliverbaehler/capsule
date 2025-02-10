@@ -274,7 +274,7 @@ webhooks:
   sideEffects: None
   timeoutSeconds: {{ $.Values.webhooks.validatingWebhooksTimeoutSeconds }}
   {{- end }}
-  {{- with .Values.webhooks.hooks.quotas }} 
+  {{- with .Values.webhooks.hooks.quotas }}
 - admissionReviewVersions:
     - v1
     - v1beta1
@@ -291,6 +291,7 @@ webhooks:
       - v1
       operations:
       - UPDATE
+      - DELETE
       resources:
       - resourcequotas
       scope: 'Namespaced'
@@ -299,6 +300,4 @@ webhooks:
     {{- toYaml .namespaceSelector | nindent 4}}
   timeoutSeconds: {{ $.Values.webhooks.mutatingWebhooksTimeoutSeconds }}
   {{- end }}
-
-
 {{- end }}

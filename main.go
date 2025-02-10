@@ -234,7 +234,7 @@ func main() {
 		route.Node(utils.InCapsuleGroups(cfg, node.UserMetadataHandler(cfg, kubeVersion))),
 		route.Defaults(defaults.Handler(cfg, kubeVersion)),
 		route.QuotaMutation(globalquotahook.StatusHandler(ctrl.Log.WithName("controllers").WithName("Webhook"))),
-		route.QuotaValidation(utils.InCapsuleGroups(cfg, globalquotahook.ValidationHandler())),
+		route.QuotaValidation(utils.InCapsuleGroups(cfg, globalquotahook.ValidationHandler()), globalquotahook.DeletionHandler(ctrl.Log.WithName("controllers").WithName("Webhook"))),
 	)
 
 	nodeWebhookSupported, _ := utils.NodeWebhookSupported(kubeVersion)
