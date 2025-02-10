@@ -239,9 +239,6 @@ func (h *statusHandler) calculate(ctx context.Context, c client.Client, decoder 
 		for resourceName, avail := range availableSpace {
 			rlog := h.log.WithValues("resource", resourceName)
 
-			quota.Status.Hard[resourceName] = avail
-			rlog.V(5).Info("assigning available quota")
-
 			// Get From the status whet's currently Used
 			var globalUsage resource.Quantity
 			if currentUsed, exists := tenantUsed[resourceName]; exists {
@@ -292,7 +289,8 @@ func (h *statusHandler) calculate(ctx context.Context, c client.Client, decoder 
 			default:
 				rlog.V(5).Info("negate")
 				// SUbstract Difference from available
-				globalUsage.Sub(diff)
+				// Negative values also combine correctly with the Add() operation
+				globalUsage.Add(diff)
 
 				// Prevent Usage from going to negative
 				stat := globalUsage.Cmp(zero)
@@ -322,6 +320,8 @@ func (h *statusHandler) calculate(ctx context.Context, c client.Client, decoder 
 
 		return nil
 	})
+
+	// When Quota was posted, we can allocate
 
 	if err != nil {
 		h.log.Error(err, "Failed to process ResourceQuota update", "quota", quota.Name)
