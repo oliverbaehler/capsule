@@ -10,6 +10,7 @@ import (
 	"golang.org/x/sync/errgroup"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -335,6 +336,11 @@ func (r *Manager) syncResourceQuota(ctx context.Context, quota *capsulev1beta2.G
 			},
 		}
 
+		// Verify if quota is present
+		if err := r.Client.Get(ctx, types.NamespacedName{Name: target.Name, Namespace: target.Namespace}, target); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+
 		var res controllerutil.OperationResult
 
 		err = retry.RetryOnConflict(retry.DefaultBackoff, func() (retryErr error) {
@@ -351,19 +357,19 @@ func (r *Manager) syncResourceQuota(ctx context.Context, quota *capsulev1beta2.G
 				target.Spec.Scopes = resQuota.Scopes
 				target.Spec.ScopeSelector = resQuota.ScopeSelector
 
-				initialValues, err := quota.GetQuotaSpace(index)
+				// Gather what's left in quota
+				space, err := quota.GetQuotaSpace(index)
 				if err != nil {
 					return err
 				}
-
-				r.Log.Info("Resource Quota sync result", "initial", initialValues, "name", target.Name, "namespace", target.Namespace)
 
 				// This is important when a resourcequota is newly added (new namespace)
 				// We don't want to have a racing condition and wait until the elements are synced to
 				// the quota. But we take what's left (or when first namespace then hard 1:1) and assign it.
 				// It may be further reduced by the limits reconciler
-				target.Spec.Hard = initialValues
-				target.Status.Hard = initialValues
+				target.Spec.Hard = space
+
+				r.Log.Info("Resource Quota sync result", "space", space, "name", target.Name, "namespace", target.Namespace)
 
 				return controllerutil.SetControllerReference(quota, target, r.Client.Scheme())
 			})
