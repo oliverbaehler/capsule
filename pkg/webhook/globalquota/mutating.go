@@ -12,7 +12,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/client-go/tools/record"
-	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
@@ -98,139 +97,128 @@ func (h *statusHandler) calculate(ctx context.Context, c client.Client, decoder 
 
 	zero := resource.MustParse("0")
 
-	// Use retry to handle concurrent updates
-	err = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		// Re-fetch the tenant to get the latest status
-		if err := c.Get(ctx, client.ObjectKey{Name: globalQuota.Name}, globalQuota); err != nil {
-			h.log.Error(err, "Failed to fetch globalquota during retry", "quota", globalQuota.Name)
-
-			return err
-		}
-		// Fetch the latest tenant quota status
-		tenantQuota, exists := globalQuota.Status.Quota[api.Name(item)]
-		if !exists {
-			h.log.V(5).Info("No quota entry found in tenant status; initializing", "item", api.Name(item))
-
-			return nil
-		}
-
-		// Calculate remaining available space for this item
-		availableSpace, _ := globalQuota.GetQuotaSpace(api.Name(item))
-		if availableSpace == nil {
-			return fmt.Errorf("available space is nil for item %s", api.Name(item))
-		}
-
-		// Fetch current used quota
-		tenantUsed := tenantQuota.Used
-		if tenantUsed == nil {
-			tenantUsed = corev1.ResourceList{}
-		}
-
-		h.log.V(5).Info("Available space calculated", "space", availableSpace)
-
-		// Process each resource and enforce allocation limits
-		for resourceName, avail := range availableSpace {
-			rlog := h.log.WithValues("resource", resourceName)
-
-			// Get From the status whet's currently Used
-			var globalUsage resource.Quantity
-			if currentUsed, exists := tenantUsed[resourceName]; exists {
-				globalUsage = currentUsed.DeepCopy()
-			} else {
-				globalUsage = resource.MustParse("0")
-			}
-
-			// Calculate Ingestion Size
-			oldAllocated, exists := oldQuota.Status.Used[resourceName]
-			if !exists {
-				oldAllocated = resource.Quantity{} // default to zero
-			}
-			//
-			//// Get the newly requested limit from the updated quota
-			newRequested, exists := quota.Status.Used[resourceName]
-			if !exists {
-				quota.Status.Hard[resourceName] = resource.Quantity{}
-				newRequested = oldAllocated.DeepCopy() // assume no change if missing
-			}
-
-			// Calculate Difference in Usage
-			diff := newRequested.DeepCopy()
-			diff.Sub(oldAllocated)
-
-			rlog.V(5).Info("calculate ingestion", "diff", diff, "old", oldAllocated, "new", newRequested)
-
-			// Compare how the newly ingested resources compare against empty resources
-			// This is the quickest way to find out, how the status must be updated
-			stat := diff.Cmp(zero)
-			switch {
-			// Resources are eual
-			case stat == 0:
-				continue
-			// Resource Consumtion Increased
-			case stat > 0:
-				rlog.V(5).Info("increase")
-				// Validate Space
-				// Overprovisioned, allocate what's left
-				if avail.Cmp(diff) < 0 {
-					// Overprovisioned, allocate what's left
-					globalUsage.Add(avail)
-
-					// Here we cap overprovisioning, we add what's left to the
-					// old status and update the item status. For the other operations that's ensured
-					// because of this webhook.
-
-					oldAllocated.Add(avail)
-					rlog.V(5).Info("PREVENT OVERPROVISING", "allocation", oldAllocated)
-					quota.Status.Hard[resourceName] = oldAllocated
-
-				} else {
-					// Adding, since requested resources have space
-					globalUsage.Add(diff)
-
-					oldAllocated.Add(diff)
-					quota.Status.Hard[resourceName] = oldAllocated
-
-				}
-			// Resource Consumption decreased
-			default:
-				rlog.V(5).Info("negate")
-				// SUbstract Difference from available
-				// Negative values also combine correctly with the Add() operation
-				globalUsage.Add(diff)
-
-				// Prevent Usage from going to negative
-				stat := globalUsage.Cmp(zero)
-				if stat < 0 {
-					globalUsage = zero
-				}
-			}
-
-			rlog.V(5).Info("calculate ingestion", "diff", diff, "usage", avail, "usage", globalUsage)
-
-			rlog.V(5).Info("caclulated total usage", "global", globalUsage, "requested", quota.Status.Used[resourceName])
-			tenantUsed[resourceName] = globalUsage
-		}
-
-		// Persist the updated usage in globalQuota.Status.Quota
-		tenantQuota.Used = tenantUsed.DeepCopy()
-		globalQuota.Status.Quota[api.Name(item)] = tenantQuota
-
-		//  Ensure the status is updated immediately
-		if err := c.Status().Update(ctx, globalQuota); err != nil {
-			if apierrors.IsConflict(err) {
-				h.log.Info("GlobalQuota status update conflict detected: object was updated concurrently", "error", err.Error())
-				return fmt.Errorf("failed to update GlobalQuota status due to conflict: %w", err)
-			}
-
-			h.log.Info("Failed to update GlobalQuota status", "error", err.Error())
-
-			return fmt.Errorf("failed to update GlobalQuota status: %w", err)
-		}
-
-		h.log.Info("Successfully updated tenant status", "GlobalQuota", globalQuota.Name, "quota", api.Name(item), "namespace", quota.Namespace)
+	// Fetch the latest tenant quota status
+	tenantQuota, exists := globalQuota.Status.Quota[api.Name(item)]
+	if !exists {
+		h.log.V(5).Info("No quota entry found in tenant status; initializing", "item", api.Name(item))
 
 		return nil
-	})
+	}
+
+	// Calculate remaining available space for this item
+	availableSpace, _ := globalQuota.GetQuotaSpace(api.Name(item))
+	if availableSpace == nil {
+		availableSpace = corev1.ResourceList{}
+	}
+
+	// Fetch current used quota
+	tenantUsed := tenantQuota.Used
+	if tenantUsed == nil {
+		tenantUsed = corev1.ResourceList{}
+	}
+
+	h.log.V(5).Info("Available space calculated", "space", availableSpace)
+
+	// Process each resource and enforce allocation limits
+	for resourceName, avail := range availableSpace {
+		rlog := h.log.WithValues("resource", resourceName)
+
+		// Get From the status whet's currently Used
+		var globalUsage resource.Quantity
+		if currentUsed, exists := tenantUsed[resourceName]; exists {
+			globalUsage = currentUsed.DeepCopy()
+		} else {
+			globalUsage = resource.MustParse("0")
+		}
+
+		// Calculate Ingestion Size
+		oldAllocated, exists := oldQuota.Status.Used[resourceName]
+		if !exists {
+			oldAllocated = resource.Quantity{} // default to zero
+		}
+		//
+		//// Get the newly requested limit from the updated quota
+		newRequested, exists := quota.Status.Used[resourceName]
+		if !exists {
+			quota.Status.Hard[resourceName] = resource.Quantity{}
+			newRequested = oldAllocated.DeepCopy() // assume no change if missing
+		}
+
+		// Calculate Difference in Usage
+		diff := newRequested.DeepCopy()
+		diff.Sub(oldAllocated)
+
+		rlog.V(5).Info("calculate ingestion", "diff", diff, "old", oldAllocated, "new", newRequested)
+
+		// Compare how the newly ingested resources compare against empty resources
+		// This is the quickest way to find out, how the status must be updated
+		stat := diff.Cmp(zero)
+		switch {
+		// Resources are eual
+		case stat == 0:
+			continue
+		// Resource Consumtion Increased
+		case stat > 0:
+			rlog.V(5).Info("increase")
+			// Validate Space
+			// Overprovisioned, allocate what's left
+			if avail.Cmp(diff) < 0 {
+				// Overprovisioned, allocate what's left
+				globalUsage.Add(avail)
+
+				// Here we cap overprovisioning, we add what's left to the
+				// old status and update the item status. For the other operations that's ensured
+				// because of this webhook.
+
+				oldAllocated.Add(avail)
+				rlog.V(5).Info("PREVENT OVERPROVISING", "allocation", oldAllocated)
+				quota.Status.Hard[resourceName] = oldAllocated
+
+			} else {
+				// Adding, since requested resources have space
+				globalUsage.Add(diff)
+
+				oldAllocated.Add(diff)
+				quota.Status.Hard[resourceName] = oldAllocated
+
+			}
+		// Resource Consumption decreased
+		default:
+			rlog.V(5).Info("negate")
+			// SUbstract Difference from available
+			// Negative values also combine correctly with the Add() operation
+			globalUsage.Add(diff)
+
+			// Prevent Usage from going to negative
+			stat := globalUsage.Cmp(zero)
+			if stat < 0 {
+				globalUsage = zero
+			}
+		}
+
+		rlog.V(5).Info("calculate ingestion", "diff", diff, "usage", avail, "usage", globalUsage)
+
+		rlog.V(5).Info("caclulated total usage", "global", globalUsage, "requested", quota.Status.Used[resourceName])
+		tenantUsed[resourceName] = globalUsage
+	}
+
+	// Persist the updated usage in globalQuota.Status.Quota
+	tenantQuota.Used = tenantUsed.DeepCopy()
+	globalQuota.Status.Quota[api.Name(item)] = tenantQuota
+
+	//  Ensure the status is updated immediately
+	if err := c.Status().Update(ctx, globalQuota); err != nil {
+		if apierrors.IsConflict(err) {
+			h.log.Info("GlobalQuota status update conflict detected: object was updated concurrently", "error", err.Error())
+			utils.ErroredResponse(err)
+		}
+
+		h.log.Info("Failed to update GlobalQuota status", "error", err.Error())
+
+		utils.ErroredResponse(err)
+	}
+
+	h.log.Info("Successfully updated tenant status", "GlobalQuota", globalQuota.Name, "quota", api.Name(item), "namespace", quota.Namespace)
 
 	h.log.Info("caping hard quota", "globalquota", globalQuota.Status.Quota[api.Name(item)].Used, "quota", quota.Status.Used, "quota", api.Name(item), "namespace", quota.Namespace)
 
