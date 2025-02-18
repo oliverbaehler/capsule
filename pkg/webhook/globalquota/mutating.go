@@ -153,6 +153,7 @@ func (h *statusHandler) calculate(ctx context.Context, c client.Client, decoder 
 		// Compare how the newly ingested resources compare against empty resources
 		// This is the quickest way to find out, how the status must be updated
 		stat := diff.Cmp(zero)
+
 		switch {
 		// Resources are eual
 		case stat == 0:
@@ -170,7 +171,7 @@ func (h *statusHandler) calculate(ctx context.Context, c client.Client, decoder 
 				// old status and update the item status. For the other operations that's ensured
 				// because of this webhook.
 
-				oldAllocated.Add(avail)
+				//oldAllocated.Add(avail)
 				rlog.V(5).Info("PREVENT OVERPROVISING", "allocation", oldAllocated)
 				quota.Status.Hard[resourceName] = oldAllocated
 
@@ -210,22 +211,9 @@ func (h *statusHandler) calculate(ctx context.Context, c client.Client, decoder 
 	if err := c.Status().Update(ctx, globalQuota); err != nil {
 		if apierrors.IsConflict(err) {
 			h.log.Info("GlobalQuota status update conflict detected: object was updated concurrently", "error", err.Error())
-			utils.ErroredResponse(err)
 		}
 
-		h.log.Info("Failed to update GlobalQuota status", "error", err.Error())
-
-		utils.ErroredResponse(err)
-	}
-
-	h.log.Info("Successfully updated tenant status", "GlobalQuota", globalQuota.Name, "quota", api.Name(item), "namespace", quota.Namespace)
-
-	h.log.Info("caping hard quota", "globalquota", globalQuota.Status.Quota[api.Name(item)].Used, "quota", quota.Status.Used, "quota", api.Name(item), "namespace", quota.Namespace)
-
-	//quota.Status.Hard = space
-
-	if err != nil {
-		h.log.Error(err, "Failed to process ResourceQuota update", "quota", quota.Name)
+		h.log.Info("failed to update GlobalQuota status", "error", err.Error(), "global", globalQuota.Name, "quota", api.Name(item), "namespace", quota.Namespace)
 
 		return utils.ErroredResponse(err)
 	}
