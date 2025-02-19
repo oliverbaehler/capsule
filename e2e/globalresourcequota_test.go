@@ -19,6 +19,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -116,6 +117,11 @@ var _ = Describe("Global ResourceQuotas", func() {
 						corev1.ResourcePods: resource.MustParse("5"),
 					},
 				},
+				"connectivity": {
+					Hard: corev1.ResourceList{
+						corev1.ResourceServices: resource.MustParse("2"),
+					},
+				},
 			},
 		},
 	}
@@ -165,6 +171,40 @@ var _ = Describe("Global ResourceQuotas", func() {
 			for _, ns := range solarNs {
 				NamespaceCreation(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}, solar.Spec.Owners[0], defaultTimeoutInterval).Should(Succeed())
 			}
+		})
+
+		By("Scheduling services simultaneously in all namespaces", func() {
+			wg := sync.WaitGroup{} // Use WaitGroup for concurrency
+			for _, ns := range solarNs {
+				wg.Add(1)
+				go func(namespace string) { // Run in parallel
+					defer wg.Done()
+					service := &corev1.Service{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "test-service",
+							Namespace: namespace,
+							Labels: map[string]string{
+								"test-label": "to-delete",
+							},
+						},
+						Spec: corev1.ServiceSpec{
+							// Select pods with this label (ensure these pods exist in the namespace)
+							Selector: map[string]string{"app": "test"},
+							Ports: []corev1.ServicePort{
+								{
+									Port:       80,
+									TargetPort: intstr.FromInt(8080),
+									Protocol:   corev1.ProtocolTCP,
+								},
+							},
+							Type: corev1.ServiceTypeClusterIP,
+						},
+					}
+					err := k8sClient.Create(context.TODO(), service)
+					Expect(err).Should(Succeed(), "Failed to create Service in namespace %s", namespace)
+				}(ns)
+			}
+			wg.Wait() // Ensure all services are scheduled at the same time
 		})
 
 		By("Scheduling deployments simultaneously in all namespaces", func() {

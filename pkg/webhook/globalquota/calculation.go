@@ -49,6 +49,10 @@ func (h *statusHandler) OnUpdate(c client.Client, decoder admission.Decoder, rec
 }
 
 func (h *statusHandler) calculate(ctx context.Context, c client.Client, decoder admission.Decoder, recorder record.EventRecorder, req admission.Request) *admission.Response {
+	h.log.V(3).Info("loggign request", "REQUEST", req)
+
+	return utils.ErroredResponse(fmt.Errorf("meowie"))
+
 	// Decode the incoming object
 	quota := &corev1.ResourceQuota{}
 	if err := decoder.Decode(req, quota); err != nil {
@@ -61,7 +65,7 @@ func (h *statusHandler) calculate(ctx context.Context, c client.Client, decoder 
 		return utils.ErroredResponse(fmt.Errorf("failed to decode old ResourceQuota object: %w", err))
 	}
 
-	h.log.V(5).Info("loggign request", "REQUEST", req)
+	h.log.V(3).Info("loggign request", "REQUEST", req)
 
 	// Get Item within Resource Quota
 	indexLabel := capsuleutils.GetGlobalResourceQuotaTypeLabel()
@@ -83,7 +87,7 @@ func (h *statusHandler) calculate(ctx context.Context, c client.Client, decoder 
 
 	// Skip if quota not active
 	if !globalQuota.Spec.Active {
-		h.log.V(5).Info("GlobalQuota is not active", "quota", globalQuota.Name)
+		h.log.V(3).Info("GlobalQuota is not active", "quota", globalQuota.Name)
 
 		return nil
 	}
@@ -117,11 +121,19 @@ func (h *statusHandler) calculate(ctx context.Context, c client.Client, decoder 
 		tenantUsed = corev1.ResourceList{}
 	}
 
-	h.log.V(5).Info("Available space calculated", "space", availableSpace)
+	h.log.V(3).Info("Available space calculated", "space", availableSpace)
 
 	// Process each resource and enforce allocation limits
 	for resourceName, avail := range availableSpace {
 		rlog := h.log.WithValues("resource", resourceName)
+
+		rlog.V(3).Info("AVAILABLE", "avail", avail, "USED", tenantUsed[resourceName], "HARD", tenantQuota.Hard[resourceName])
+
+		if avail.Cmp(zero) == 0 {
+			rlog.V(3).Info("NO SPACE AVAILABLE")
+			quota.Status.Hard[resourceName] = oldQuota.Status.Hard[resourceName]
+			continue
+		}
 
 		// Get From the status whet's currently Used
 		var globalUsage resource.Quantity
@@ -148,7 +160,7 @@ func (h *statusHandler) calculate(ctx context.Context, c client.Client, decoder 
 		diff := newRequested.DeepCopy()
 		diff.Sub(oldAllocated)
 
-		rlog.V(5).Info("calculate ingestion", "diff", diff, "old", oldAllocated, "new", newRequested)
+		rlog.V(3).Info("calculate ingestion", "diff", diff, "old", oldAllocated, "new", newRequested)
 
 		// Compare how the newly ingested resources compare against empty resources
 		// This is the quickest way to find out, how the status must be updated
@@ -160,7 +172,7 @@ func (h *statusHandler) calculate(ctx context.Context, c client.Client, decoder 
 			continue
 		// Resource Consumtion Increased
 		case stat > 0:
-			rlog.V(5).Info("increase")
+			rlog.V(3).Info("increase")
 			// Validate Space
 			// Overprovisioned, allocate what's left
 			if avail.Cmp(diff) < 0 {
@@ -173,7 +185,7 @@ func (h *statusHandler) calculate(ctx context.Context, c client.Client, decoder 
 
 				//oldAllocated.Add(avail)
 				rlog.V(5).Info("PREVENT OVERPROVISING", "allocation", oldAllocated)
-				quota.Status.Hard[resourceName] = oldAllocated
+				quota.Status.Hard[resourceName] = oldQuota.Status.Hard[resourceName]
 
 			} else {
 				// Adding, since requested resources have space
@@ -185,7 +197,7 @@ func (h *statusHandler) calculate(ctx context.Context, c client.Client, decoder 
 			}
 		// Resource Consumption decreased
 		default:
-			rlog.V(5).Info("negate")
+			rlog.V(3).Info("negate")
 			// SUbstract Difference from available
 			// Negative values also combine correctly with the Add() operation
 			globalUsage.Add(diff)
@@ -197,9 +209,7 @@ func (h *statusHandler) calculate(ctx context.Context, c client.Client, decoder 
 			}
 		}
 
-		rlog.V(5).Info("calculate ingestion", "diff", diff, "usage", avail, "usage", globalUsage)
-
-		rlog.V(5).Info("caclulated total usage", "global", globalUsage, "requested", quota.Status.Used[resourceName])
+		rlog.V(3).Info("caclulated total usage", "global", globalUsage, "diff", diff, "usage", avail, "hard", quota.Status.Hard[resourceName], "usage", quota.Status.Used[resourceName])
 		tenantUsed[resourceName] = globalUsage
 	}
 

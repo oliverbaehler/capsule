@@ -162,23 +162,39 @@ func (r *Manager) syncResourceQuotas(
 		}
 	}
 
-	//nolint:nestif
+	return SyncResourceQuotas(ctx, r.Client, quota, matchingNamespaces)
+}
+
+// Synchronize resources quotas in all the given namespaces (routines)
+func SyncResourceQuotas(
+	ctx context.Context,
+	c client.Client,
+	quota *capsulev1beta2.GlobalResourceQuota,
+	namespaces []string,
+) (err error) {
 	group := new(errgroup.Group)
 
 	// Sync resource quotas for matching namespaces
-	for _, ns := range matchingNamespaces {
+	for _, ns := range namespaces {
 		namespace := ns
 
 		group.Go(func() error {
-			return r.syncResourceQuota(ctx, quota, namespace)
+			return SyncResourceQuota(ctx, c, quota, namespace)
 		})
 	}
 
 	return group.Wait()
 }
 
+// Synchronize a single resourcequota
+//
 //nolint:nakedret
-func (r *Manager) syncResourceQuota(ctx context.Context, quota *capsulev1beta2.GlobalResourceQuota, namespace string) (err error) {
+func SyncResourceQuota(
+	ctx context.Context,
+	c client.Client,
+	quota *capsulev1beta2.GlobalResourceQuota,
+	namespace string,
+) (err error) {
 	// getting ResourceQuota labels for the mutateFn
 	var quotaLabel, typeLabel string
 
@@ -197,14 +213,12 @@ func (r *Manager) syncResourceQuota(ctx context.Context, quota *capsulev1beta2.G
 		}
 
 		// Verify if quota is present
-		if err := r.Client.Get(ctx, types.NamespacedName{Name: target.Name, Namespace: target.Namespace}, target); err != nil && !apierrors.IsNotFound(err) {
+		if err := c.Get(ctx, types.NamespacedName{Name: target.Name, Namespace: target.Namespace}, target); err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
 
-		var res controllerutil.OperationResult
-
 		err = retry.RetryOnConflict(retry.DefaultBackoff, func() (retryErr error) {
-			res, retryErr = controllerutil.CreateOrUpdate(ctx, r.Client, target, func() (err error) {
+			_, retryErr = controllerutil.CreateOrUpdate(ctx, c, target, func() (err error) {
 				targetLabels := target.GetLabels()
 				if targetLabels == nil {
 					targetLabels = map[string]string{}
@@ -229,17 +243,11 @@ func (r *Manager) syncResourceQuota(ctx context.Context, quota *capsulev1beta2.G
 				// It may be further reduced by the limits reconciler
 				target.Spec.Hard = space
 
-				r.Log.Info("Resource Quota sync result", "space", space, "name", target.Name, "namespace", target.Namespace)
-
-				return controllerutil.SetControllerReference(quota, target, r.Client.Scheme())
+				return controllerutil.SetControllerReference(quota, target, c.Scheme())
 			})
 
 			return retryErr
 		})
-
-		r.emitEvent(quota, target.GetNamespace(), res, fmt.Sprintf("Ensuring ResourceQuota %s", target.GetName()), err)
-
-		r.Log.Info("Resource Quota sync result: "+string(res), "name", target.Name, "namespace", target.Namespace)
 
 		if err != nil {
 			return

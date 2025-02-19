@@ -294,6 +294,7 @@ webhooks:
       - DELETE
       resources:
       - resourcequotas
+      - resourcequotas/status
       scope: 'Namespaced'
   sideEffects: None
   namespaceSelector:

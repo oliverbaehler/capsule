@@ -7,9 +7,10 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/projectcapsule/capsule/pkg/api"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+
+	"github.com/projectcapsule/capsule/pkg/api"
 )
 
 func (g *GlobalResourceQuota) GetQuotaSpace(index api.Name) (corev1.ResourceList, error) {
