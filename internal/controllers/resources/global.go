@@ -206,7 +206,7 @@ func (r *globalResourceController) Reconcile(ctx context.Context, request reconc
 	//nolint:nestif
 	if tntResource.DeletionTimestamp.IsZero() {
 		if len(tntResource.Spec.Triggers) > 0 {
-			if validationErr := replication.ValidateTriggers(&tntResource.Spec.TenantResourceCommonSpec, false, r.conditions); validationErr != nil {
+			if validationErr := replication.ValidateTriggerStructure(&tntResource.Spec.TenantResourceCommonSpec, false); validationErr != nil {
 				statusErr = validationErr
 
 				return requeue, nil

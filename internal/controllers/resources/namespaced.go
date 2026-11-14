@@ -213,7 +213,7 @@ func (r *namespacedResourceController) Reconcile(ctx context.Context, request re
 	//nolint:nestif
 	if tntResource.DeletionTimestamp.IsZero() {
 		if len(tntResource.Spec.Triggers) > 0 {
-			if validationErr := replication.ValidateTriggers(&tntResource.Spec.TenantResourceCommonSpec, true, r.conditions); validationErr != nil {
+			if validationErr := replication.ValidateTriggerStructure(&tntResource.Spec.TenantResourceCommonSpec, true); validationErr != nil {
 				statusErr = validationErr
 
 				return requeue, nil

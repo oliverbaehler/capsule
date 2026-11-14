@@ -84,7 +84,7 @@ func newAdmissionConfigurationFixture(t *testing.T, kind string, count int, fall
 	cfg := configuration.NewCapsuleConfiguration(t.Context(), cached, direct, nil, object.Name)
 	f.reconciler = &mutatingReconciler{client: cached, configuration: cfg, log: logr.Discard()}
 	if kind == "validating" {
-		f.reconciler = &validatingReconciler{delivery: testDeliveryKey(), client: cached, configuration: cfg, log: logr.Discard()}
+		f.reconciler = &validatingReconciler{client: cached, configuration: cfg, log: logr.Discard()}
 	}
 	return f
 }
@@ -175,5 +175,41 @@ func TestAdmissionConfigurationRefreshesIdentities(t *testing.T) {
 			}
 			f.reconcile(t, kind, 3, current.Spec.Users, current.Spec.Administrators)
 		})
+	}
+}
+
+func TestValidatingConfigurationRemovesPreviewTriggerHooks(t *testing.T) {
+	f := newAdmissionConfigurationFixture(t, "validating", 1, false)
+	users := rbac.UserListSpec{{Kind: rbac.UserOwner, Name: "alice"}}
+	admins := rbac.UserListSpec{{Kind: rbac.GroupOwner, Name: "admins"}}
+	f.reconcile(t, "validating", 1, users, admins)
+	current := &admissionv1.ValidatingWebhookConfiguration{}
+	key := client.ObjectKey{Name: "validating"}
+	if err := f.client.Get(t.Context(), key, current); err != nil {
+		t.Fatal(err)
+	}
+	enforcement := current.Webhooks[0].DeepCopy()
+	legacy := current.Webhooks[0].DeepCopy()
+	legacy.Name = "trigger-preview.projectcapsule.dev"
+	current.Webhooks = append(current.Webhooks, *legacy)
+	if err := f.client.Update(t.Context(), current); err != nil {
+		t.Fatal(err)
+	}
+	// Subscription maintenance belongs to the watch controller. Admission
+	// configuration must still converge without reading replication sources.
+	r := f.reconciler.(*validatingReconciler)
+	r.client = interceptor.NewClient(f.client, interceptor.Funcs{List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+		switch list.(type) {
+		case *capsulev1beta2.TenantResourceList, *capsulev1beta2.GlobalTenantResourceList:
+			t.Fatal("admission configuration read replication subscriptions")
+		}
+		return c.List(ctx, list, opts...)
+	}})
+	f.reconcile(t, "validating", 1, users, admins)
+	if err := f.client.Get(t.Context(), key, current); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(current.Webhooks[0], *enforcement) {
+		t.Fatal("removing the preview hook changed ordinary enforcement")
 	}
 }

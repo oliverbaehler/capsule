@@ -76,7 +76,6 @@ import (
 	"github.com/projectcapsule/capsule/internal/webhook/owners"
 	"github.com/projectcapsule/capsule/internal/webhook/pod"
 	"github.com/projectcapsule/capsule/internal/webhook/pvc"
-	replicationwebhook "github.com/projectcapsule/capsule/internal/webhook/replication"
 	"github.com/projectcapsule/capsule/internal/webhook/resourcepool"
 	"github.com/projectcapsule/capsule/internal/webhook/route"
 	rulesgenericmutation "github.com/projectcapsule/capsule/internal/webhook/rules/generic/mutation"
@@ -421,11 +420,6 @@ func main() {
 
 	directCfg := configuration.NewCapsuleConfiguration(ctx, directClient, directClient, restConfig, controllerConfig.ConfigurationName)
 
-	deliveryKey, err := admission.LoadTriggerDeliveryKey(ctx, directClient, ns, directCfg.GetConfigObject())
-	if err != nil {
-		setupLog.Error(err, "replication triggers disabled: unable to initialize delivery authentication; existing admission handlers remain enabled")
-	}
-
 	tlsReconciler := &tlscontroller.Reconciler{}
 
 	if directCfg.EnableTLSConfiguration() {
@@ -751,7 +745,6 @@ func main() {
 			pvcrules.AttributeClassHandler(cfg, regexCache, labelSelectorCache, celCache),
 		),
 		route.GenericReplicasHandler(),
-		route.ReplicationTriggers(replicationwebhook.TriggerHandler(cfg, triggerDispatcher, ctrl.Log.WithName("replication-triggers")), deliveryKey),
 		route.GenericManagedHandler(cfg),
 		route.Pod(
 			pod.Handler(cfg,
@@ -1001,15 +994,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := resources.NewResourceWatches(manager.GetClient(), dynamicClient, manager.GetRESTMapper(), ctrl.Log.WithName("resource-watches"), celCache, labelSelectorCache, triggerDispatcher, triggerRecorder).SetupWithManager(manager, controllerConfig); err != nil {
+		setupLog.Error(err, "unable to create resource watch controller")
+		os.Exit(1)
+	}
+
 	if err := admission.Add(
 		ctrl.Log.WithName("capsule.ctrl").WithName("admission"),
 		manager,
 		manager.GetEventRecorder("admission-ctrl"),
 		controllerConfig,
 		directCfg,
-		celCache,
-		triggerRecorder,
-		deliveryKey,
 	); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "admission")
 		os.Exit(1)

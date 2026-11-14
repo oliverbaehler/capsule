@@ -6,8 +6,9 @@ package tenantresource
 import (
 	"testing"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	admissionv1 "k8s.io/api/admissionregistration/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -15,44 +16,51 @@ import (
 	"github.com/projectcapsule/capsule/pkg/runtime/replication"
 )
 
-func TestTriggerIndexTracksUpdatesAndNamespaceSeparation(t *testing.T) {
+func TestWatchIndexResourceOperationAndLifecycle(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := capsulev1beta2.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	obj := &capsulev1beta2.TenantResource{Name: "subscriber", Namespace: "a", Spec: capsulev1beta2.TenantResourceSpec{TenantResourceCommonSpec: capsulev1beta2.TenantResourceCommonSpec{Triggers: []capsulev1beta2.TenantResourceTrigger{{Name: "one"}}}}}
-	other := obj.DeepCopy()
-	other.Namespace = "b"
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(obj, other).WithIndex(obj, replication.TriggerIndexerField, (Triggers{}).Func()).Build()
-	id := replication.MatchID(&obj.Spec.Triggers[0])
-	list := func(namespace string, key string) int {
-		l := &capsulev1beta2.TenantResourceList{}
-		if err := c.List(t.Context(), l, client.InNamespace(namespace), client.MatchingFields{replication.TriggerIndexerField: key}); err != nil {
+	trigger := capsulev1beta2.TenantResourceTrigger{Name: "source", Operations: []admissionv1.OperationType{admissionv1.Create}, APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"configmaps"}}
+	a := &capsulev1beta2.TenantResource{Name: "source", Namespace: "a", Spec: capsulev1beta2.TenantResourceSpec{TenantResourceCommonSpec: capsulev1beta2.TenantResourceCommonSpec{Triggers: []capsulev1beta2.TenantResourceTrigger{trigger}}}}
+	b := a.DeepCopy()
+	b.Namespace = "b"
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(a, b).WithIndex(a, replication.TriggerIndexerField, (Triggers{}).Func()).Build()
+	key := replication.ResourceKey(schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, admissionv1.Create)
+	count := func(ns, k string) int {
+		t.Helper()
+		list := &capsulev1beta2.TenantResourceList{}
+		if err := c.List(t.Context(), list, client.InNamespace(ns), client.MatchingFields{replication.TriggerIndexerField: k}); err != nil {
 			t.Fatal(err)
 		}
-		return len(l.Items)
+		return len(list.Items)
 	}
-	if list("a", id) != 1 || list("b", id) != 1 || list("c", id) != 0 {
-		t.Fatal("namespace separation lost")
+	if count("a", key) != 1 || count("b", key) != 1 || count("c", key) != 0 {
+		t.Fatal("namespace scoping failed")
 	}
-	obj.Spec.Triggers[0].ObjectSelector = &metav1.LabelSelector{MatchLabels: map[string]string{"profile": "changed"}}
-	if err := c.Update(t.Context(), obj); err != nil {
+	a.Spec.Triggers[0].Resources = []string{"secrets"}
+	if err := c.Update(t.Context(), a); err != nil {
 		t.Fatal(err)
 	}
-	if list("a", id) != 0 || list("b", id) != 1 {
-		t.Fatal("updated relationships leaked across namespaces")
+	if count("a", key) != 0 || count("b", key) != 1 {
+		t.Fatal("resource relationship was not updated")
 	}
-	obj.Spec.Cordoned = new(true)
-	if err := c.Update(t.Context(), obj); err != nil {
+	a.Spec.Cordoned = new(true)
+	if err := c.Update(t.Context(), a); err != nil {
 		t.Fatal(err)
 	}
-	if list("a", replication.TriggerEnabledKey) != 0 {
-		t.Fatal("cordoned source remains enabled")
+	if count("a", replication.TriggerEnabledKey) != 0 {
+		t.Fatal("cordoned source indexed")
 	}
-	if err := c.Delete(t.Context(), other); err != nil {
+	if err := c.Delete(t.Context(), b); err != nil {
 		t.Fatal(err)
 	}
-	if list("b", id) != 0 {
-		t.Fatal("deleted source still indexed")
+	if count("b", key) != 0 {
+		t.Fatal("deleted source indexed")
+	}
+	a.Spec.Cordoned = new(false)
+	a.Spec.Triggers[0].Resources = []string{"*"}
+	if len((Triggers{}).Func()(a)) != 1 {
+		t.Fatal("malformed stored input expanded a wildcard")
 	}
 }

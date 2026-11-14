@@ -6,16 +6,13 @@ package admission
 
 import (
 	"context"
-	"fmt"
 	"maps"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
 	admissionv1 "k8s.io/api/admissionregistration/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -27,22 +24,17 @@ import (
 	capsulev1beta2 "github.com/projectcapsule/capsule/api/v1beta2"
 	"github.com/projectcapsule/capsule/internal/controllers/tls"
 	"github.com/projectcapsule/capsule/internal/controllers/utils"
-	"github.com/projectcapsule/capsule/internal/metrics"
 	"github.com/projectcapsule/capsule/pkg/api/meta"
 	"github.com/projectcapsule/capsule/pkg/runtime/admission"
 	"github.com/projectcapsule/capsule/pkg/runtime/configuration"
 	"github.com/projectcapsule/capsule/pkg/runtime/predicates"
-	"github.com/projectcapsule/capsule/pkg/runtime/replication"
 )
 
 type validatingReconciler struct {
 	client client.Client
 
-	configuration  configuration.Configuration
-	log            logr.Logger
-	conditions     replication.ConditionValidator
-	triggerMetrics *metrics.TriggerRecorder
-	delivery       *replication.DeliveryKey
+	configuration configuration.Configuration
+	log           logr.Logger
 }
 
 func (r *validatingReconciler) SetupWithManager(mgr ctrl.Manager, ctrlConfig utils.ControllerOptions) error {
@@ -68,8 +60,6 @@ func (r *validatingReconciler) SetupWithManager(mgr ctrl.Manager, ctrlConfig uti
 				predicates.NamesMatchingPredicate{Names: []string{ctrlConfig.ConfigurationName}},
 			),
 		).
-		Watches(&capsulev1beta2.TenantResource{}, handler.EnqueueRequestsFromMapFunc(r.enqueueTriggerConfiguration), builder.WithPredicates(triggerSourceChanged())).
-		Watches(&capsulev1beta2.GlobalTenantResource{}, handler.EnqueueRequestsFromMapFunc(r.enqueueTriggerConfiguration), builder.WithPredicates(triggerSourceChanged())).
 		WithOptions(ctrlConfig.Runtime.ToControllerOptions()).
 		Complete(r)
 }
@@ -87,10 +77,6 @@ func (r *validatingReconciler) Reconcile(ctx context.Context, request reconcile.
 	return res, err
 }
 
-func (r *validatingReconciler) enqueueTriggerConfiguration(context.Context, client.Object) []reconcile.Request {
-	return []reconcile.Request{{Name: string(r.configuration.Admission().Validating.Name)}}
-}
-
 func (r *validatingReconciler) reconcileValidatingConfiguration(
 	ctx context.Context,
 	cfg *capsulev1beta2.DynamicValidatingAdmissionConfig,
@@ -104,10 +90,6 @@ func (r *validatingReconciler) reconcileValidatingConfiguration(
 	}
 
 	if len(desiredHooks) == 0 {
-		if r.triggerMetrics != nil {
-			r.triggerMetrics.OmittedRegistrations.Set(0)
-		}
-
 		managed, err := r.listManagedValidatingWebhookConfigs(ctx)
 		if err != nil {
 			return err
@@ -183,21 +165,6 @@ func (r *validatingReconciler) reconcileValidatingConfiguration(
 			preserveValidatingWebhookCABundles(obj.Webhooks, caCert)
 		} else {
 			restoreValidatingWebhookCABundles(obj.Webhooks, existingCABundles)
-		}
-
-		bounded, omitted, budgetErr := boundTriggerRegistrations(obj.Webhooks)
-		if budgetErr != nil {
-			return budgetErr
-		}
-
-		obj.Webhooks = r.validateBoundedTriggers(bounded)
-
-		if r.triggerMetrics != nil {
-			r.triggerMetrics.OmittedRegistrations.Set(float64(omitted))
-		}
-
-		if omitted > 0 {
-			r.log.Info("trigger registration budget exhausted; periodic reconciliation remains active", "omittedGroups", omitted)
 		}
 
 		annotations[predicates.AdmissionStateHashAnnotation] = predicates.ValidatingAdmissionStateHash(obj)
@@ -282,131 +249,7 @@ func (r *validatingReconciler) validatingWebhooks(
 		}
 	}
 
-	triggerHooks, err := r.triggerWebhooks(ctx, cfg.Client)
-	if err != nil {
-		return nil, err
-	}
-
-	return append(hooks, triggerHooks...), nil
-}
-
-func (r *validatingReconciler) triggerWebhooks(ctx context.Context, config *admissionv1.WebhookClientConfig) ([]admissionv1.ValidatingWebhook, error) {
-	// Authentication is required only for notifications. Keep the existing
-	// enforcement configuration reconciling if key initialization failed.
-	if r.delivery == nil {
-		return nil, nil
-	}
-
-	global := &capsulev1beta2.GlobalTenantResourceList{}
-	local := &capsulev1beta2.TenantResourceList{}
-
-	filter := client.MatchingFields{replication.TriggerIndexerField: replication.TriggerEnabledKey}
-	if err := r.client.List(ctx, global, filter, client.UnsafeDisableDeepCopy); err != nil {
-		return nil, err
-	}
-
-	if err := r.client.List(ctx, local, filter, client.UnsafeDisableDeepCopy); err != nil {
-		return nil, err
-	}
-
-	if len(global.Items)+len(local.Items) == 0 {
-		return nil, nil
-	}
-
-	if err := admission.ValidateWebhookClientConfig(config); err != nil {
-		return nil, err
-	}
-
-	hooks := make(map[string]admissionv1.ValidatingWebhook)
-	namespaces := make(map[string]map[string]struct{})
-	globalGroups := make(map[string]bool)
-
-	add := func(spec *capsulev1beta2.TenantResourceCommonSpec, namespace string) {
-		if err := replication.ValidateTriggerStructure(spec, namespace != ""); err != nil {
-			r.log.Error(err, "skipping invalid replication triggers", "namespace", namespace)
-
-			return
-		}
-
-		for i := range spec.Triggers {
-			id := replication.MatchID(&spec.Triggers[i])
-			if _, exists := hooks[id]; !exists {
-				hooks[id] = replication.Webhook(&spec.Triggers[i], "", *config, r.delivery)
-			}
-
-			if namespace == "" {
-				globalGroups[id] = true
-			} else {
-				if namespaces[id] == nil {
-					namespaces[id] = make(map[string]struct{})
-				}
-
-				namespaces[id][namespace] = struct{}{}
-			}
-		}
-	}
-	for i := range global.Items {
-		add(&global.Items[i].Spec.TenantResourceCommonSpec, "")
-	}
-
-	for i := range local.Items {
-		add(&local.Items[i].Spec.TenantResourceCommonSpec, local.Items[i].Namespace)
-	}
-
-	out := make([]admissionv1.ValidatingWebhook, 0, len(hooks))
-
-	for id, hook := range hooks {
-		if !globalGroups[id] {
-			names := make([]string, 0, len(namespaces[id]))
-			for name := range namespaces[id] {
-				names = append(names, name)
-			}
-
-			sort.Strings(names)
-			hook.NamespaceSelector = &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{Key: meta.TenantNameLabel, Operator: metav1.LabelSelectorOpIn, Values: names}}}
-		}
-
-		out = append(out, hook)
-	}
-
-	return out, nil
-}
-
-// Compilation happens only after group, byte and enforcement budgets have been
-// applied, including the actual CA bundle. Omitted groups cannot churn the CEL
-// cache or delay enforcement updates with thousands of needless compilations.
-func (r *validatingReconciler) validateBoundedTriggers(hooks []admissionv1.ValidatingWebhook) []admissionv1.ValidatingWebhook {
-	out := hooks[:0]
-
-	for _, hook := range hooks {
-		var conditionError error
-
-		if isTriggerRegistration(hook) {
-			for _, condition := range hook.MatchConditions {
-				if strings.HasPrefix(condition.Name, "capsule-trigger-") {
-					continue
-				}
-
-				if r.conditions == nil {
-					conditionError = fmt.Errorf("trigger match condition compiler is unavailable")
-				} else {
-					conditionError = r.conditions.ValidateTriggerCondition(condition.Expression)
-				}
-
-				if conditionError != nil {
-					r.log.Error(conditionError, "skipping invalid trigger registration", "webhook", hook.Name)
-
-					break
-				}
-			}
-		}
-
-		if conditionError == nil {
-			out = append(out, hook)
-		}
-	}
-
-	return out
+	return hooks, nil
 }
 
 func validatingWebhookCABundlesByName(

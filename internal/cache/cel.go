@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"sync"
 
-	admissioncel "k8s.io/apiserver/pkg/admission/plugin/cel"
 	"k8s.io/apiserver/pkg/cel/environment"
 
 	celruntime "github.com/projectcapsule/capsule/pkg/runtime/cel"
@@ -26,8 +25,7 @@ type CELCache struct {
 	data               map[celCacheKey]*celruntime.CompiledExpression
 	resourceConditions int
 	triggerMu          sync.RWMutex
-	triggerCompiler    admissioncel.Compiler
-	triggerConditions  map[string]struct{}
+	triggerConditions  map[string]*celruntime.CompiledExpression
 	triggerOrder       []string
 	triggerNext        int
 }

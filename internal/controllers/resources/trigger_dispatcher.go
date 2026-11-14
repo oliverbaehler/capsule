@@ -18,7 +18,7 @@ import (
 	"github.com/projectcapsule/capsule/pkg/runtime/replication"
 )
 
-// TriggerDispatcher runs on every webhook replica. Coalesced annotation patches
+// TriggerDispatcher runs on the elected watch replica. Coalesced annotation patches
 // hand notifications to the elected resource controllers without per-request I/O.
 type TriggerDispatcher struct {
 	client  client.Client
@@ -32,7 +32,7 @@ func NewTriggerDispatcher(c client.Client, reader client.Reader, log logr.Logger
 	return &TriggerDispatcher{client: c, reader: reader, log: log, pending: cache.NewReplicationNotifications(), metrics: recorder}
 }
 
-func (d *TriggerDispatcher) NeedLeaderElection() bool { return false }
+func (d *TriggerDispatcher) NeedLeaderElection() bool { return true }
 
 func (d *TriggerDispatcher) Notify(target replication.Target, interval time.Duration) bool {
 	accepted := d.pending.Notify(target, interval, time.Now())

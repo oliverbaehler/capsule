@@ -14,7 +14,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	capsulev1beta2 "github.com/projectcapsule/capsule/api/v1beta2"
-	"github.com/projectcapsule/capsule/pkg/ruleengine"
 )
 
 type ConditionValidator interface{ ValidateTriggerCondition(string) error }
@@ -23,14 +22,13 @@ func ValidateTriggers(spec *capsulev1beta2.TenantResourceCommonSpec, namespaced 
 	return validateTriggers(spec, namespaced, compiler, true)
 }
 
-// ValidateTriggerStructure checks the candidate shape without compiling CEL.
-// Registration uses this before applying its serialized publication budget;
-// admission and resource controllers must continue using ValidateTriggers.
+// ValidateTriggerStructure is used by periodic reconciliation; expensive CEL
+// compilation belongs to admission and watch subscription preparation.
 func ValidateTriggerStructure(spec *capsulev1beta2.TenantResourceCommonSpec, namespaced bool) error {
 	return validateTriggers(spec, namespaced, nil, false)
 }
 
-func validateTriggers(spec *capsulev1beta2.TenantResourceCommonSpec, namespaced bool, compiler ConditionValidator, compileConditions bool) error {
+func validateTriggers(spec *capsulev1beta2.TenantResourceCommonSpec, namespaced bool, compiler ConditionValidator, compile bool) error {
 	if spec == nil {
 		return fmt.Errorf("replication specification is required")
 	}
@@ -75,15 +73,16 @@ func validateTriggers(spec *capsulev1beta2.TenantResourceCommonSpec, namespaced 
 			}
 		}
 
-		if err := ruleengine.ValidateAudience(path+".audience", t.Audience); err != nil {
-			return err
+		//nolint:staticcheck // Explicitly reject the legacy admission-only field.
+		if len(t.Audience) != 0 {
+			return fmt.Errorf("%s.audience is unsupported: watches do not carry request identities", path)
 		}
 
-		if len(t.Audience) > 64 || len(t.MatchConditions) > 60 {
-			return fmt.Errorf("%s exceeds audience or match condition limit", path)
+		if len(t.MatchConditions) > 60 {
+			return fmt.Errorf("%s exceeds match condition limit", path)
 		}
 
-		if err := validateTriggerConditions(t, path, compiler, compileConditions); err != nil {
+		if err := validateTriggerConditions(t, path, compiler, compile); err != nil {
 			return err
 		}
 	}
@@ -96,6 +95,10 @@ func validateTriggerRules(t *capsulev1beta2.TenantResourceTrigger, path string) 
 		return fmt.Errorf("%s requires operations, apiGroups, apiVersions, and resources", path)
 	}
 
+	if len(t.Operations) > 3 {
+		return fmt.Errorf("%s.operations must contain at most three entries", path)
+	}
+
 	for _, op := range t.Operations {
 		if !slices.Contains([]admissionv1.OperationType{admissionv1.Create, admissionv1.Update, admissionv1.Delete, admissionv1.OperationAll}, op) {
 			return fmt.Errorf("%s.operations contains unsupported operation %q", path, op)
@@ -106,80 +109,37 @@ func validateTriggerRules(t *capsulev1beta2.TenantResourceTrigger, path string) 
 		return fmt.Errorf("%s.operations wildcard must be the only operation", path)
 	}
 
-	for _, values := range [][]string{t.APIGroups, t.APIVersions} {
-		if slices.Contains(values, "*") && len(values) > 1 {
-			return fmt.Errorf("%s wildcard must be the only group or version", path)
-		}
-	}
-
-	if slices.Contains(t.APIVersions, "") {
-		return fmt.Errorf("%s.apiVersions must not contain empty values", path)
+	if len(t.APIGroups) > 8 || len(t.APIVersions) > 8 || len(t.Resources) > 8 || len(t.APIGroups)*len(t.APIVersions)*len(t.Resources) > MaxTriggerResources {
+		return fmt.Errorf("%s may select at most %d explicit group/version/resource combinations", path, MaxTriggerResources)
 	}
 
 	for _, group := range t.APIGroups {
-		if group != "" && group != "*" && len(validation.IsDNS1123Subdomain(group)) > 0 {
-			return fmt.Errorf("%s.apiGroups contains invalid group %q", path, group)
+		if group != "" && len(validation.IsDNS1123Subdomain(group)) > 0 {
+			return fmt.Errorf("%s.apiGroups requires explicit valid groups", path)
+		}
+	}
+
+	for _, version := range t.APIVersions {
+		if version == "" || len(validation.IsDNS1035Label(version)) > 0 {
+			return fmt.Errorf("%s.apiVersions requires explicit valid versions", path)
 		}
 	}
 
 	return validateTriggerResources(t.Resources, path)
 }
 
-// Reject overlapping wildcards before publishing the shared webhook object.
-// Otherwise one invalid subscription can block unrelated enforcement updates.
+// Informers watch explicit top-level resources, not admission subresources.
 func validateTriggerResources(resources []string, path string) error {
-	wildcardResources := make(map[string]int)
-	wildcardSubresources := make(map[string]int)
-	hasAllResources := slices.Contains(resources, "*")
-
-	for i, resource := range resources {
-		if resource == "" || strings.Count(resource, "/") > 1 {
-			return fmt.Errorf("%s.resources contains invalid resource %q", path, resource)
-		}
-
-		for part := range strings.SplitSeq(resource, "/") {
-			if part != "*" && len(validation.IsDNS1123Subdomain(part)) > 0 {
-				return fmt.Errorf("%s.resources contains invalid resource %q", path, resource)
-			}
-		}
-
-		res, sub, found := strings.Cut(resource, "/")
-		if found && sub == "*" {
-			wildcardSubresources[res] = i
-		}
-
-		if found && res == "*" {
-			wildcardResources[sub] = i
-		}
-	}
-
-	if slices.Contains(resources, "*/*") && len(resources) > 1 {
-		return fmt.Errorf("%s.resources */* must be the only resource", path)
-	}
-
-	for i, resource := range resources {
-		res, sub, found := strings.Cut(resource, "/")
-		if !found {
-			if res != "*" && hasAllResources {
-				return fmt.Errorf("%s.resources wildcard overlaps resource %q", path, resource)
-			}
-
-			continue
-		}
-
-		if index, exists := wildcardSubresources[res]; exists && index != i {
-			return fmt.Errorf("%s.resources wildcard overlaps resource %q", path, resource)
-		}
-
-		if index, exists := wildcardResources[sub]; exists && index != i {
-			return fmt.Errorf("%s.resources wildcard overlaps resource %q", path, resource)
+	for _, resource := range resources {
+		if len(validation.IsDNS1035Label(resource)) > 0 {
+			return fmt.Errorf("%s.resources requires explicit top-level resource names; wildcards and subresources are unsupported", path)
 		}
 	}
 
 	return nil
 }
 
-func validateTriggerConditions(t *capsulev1beta2.TenantResourceTrigger, path string, compiler ConditionValidator, compileConditions bool) error {
+func validateTriggerConditions(t *capsulev1beta2.TenantResourceTrigger, path string, compiler ConditionValidator, compile bool) error {
 	conditionNames := make(map[string]bool)
 
 	for _, condition := range t.MatchConditions {
@@ -193,7 +153,7 @@ func validateTriggerConditions(t *capsulev1beta2.TenantResourceTrigger, path str
 
 		conditionNames[condition.Name] = true
 
-		if !compileConditions {
+		if !compile {
 			continue
 		}
 

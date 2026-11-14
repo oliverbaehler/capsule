@@ -4,29 +4,18 @@
 package replication
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
-	"fmt"
-	"slices"
 	"strings"
 	"time"
 
-	admissionrequestv1 "k8s.io/api/admission/v1"
 	admissionv1 "k8s.io/api/admissionregistration/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
 
 	capsulev1beta2 "github.com/projectcapsule/capsule/api/v1beta2"
 	"github.com/projectcapsule/capsule/pkg/api/meta"
-	admissionapi "github.com/projectcapsule/capsule/pkg/runtime/admission"
-	"github.com/projectcapsule/capsule/pkg/runtime/configuration"
-	"github.com/projectcapsule/capsule/pkg/users"
 )
 
-// Target identifies a replication incarnation, so delayed work cannot affect a
-// deleted and recreated object with the same name.
 type Target struct {
 	Name, Namespace string
 	UID             types.UID
@@ -37,32 +26,36 @@ type Notifier interface {
 }
 
 const (
-	TriggerPath            = "/replications/triggers/"
 	TriggerAnnotation      = meta.ReplicationTriggerAnnotation
-	TriggerIndexerField    = "spec.triggers.match"
+	TriggerIndexerField    = "spec.triggers.resource"
 	TriggerEnabledKey      = "enabled"
 	DefaultTriggerInterval = 10 * time.Second
+	MaxTriggerResources    = 16
 )
 
-// MatchID identifies an immutable native admission predicate, independently of
-// audience and replication identity. A changed predicate gets a different path,
-// so requests from an obsolete webhook cannot activate an edited trigger.
-func MatchID(trigger *capsulev1beta2.TenantResourceTrigger) string {
-	projection := struct {
-		Rule              admissionv1.RuleWithOperations `json:"rule"`
-		NamespaceSelector *metav1.LabelSelector          `json:"namespaceSelector"`
-		ObjectSelector    *metav1.LabelSelector          `json:"objectSelector"`
-		Conditions        []admissionv1.MatchCondition   `json:"conditions"`
-	}{trigger.RuleWithOperations, trigger.NamespaceSelector, trigger.ObjectSelector, trigger.MatchConditions}
+// ResourceKey selects subscriptions to one explicit resource and operation.
+func ResourceKey(resource schema.GroupVersionResource, operation admissionv1.OperationType) string {
+	return resource.Group + "/" + resource.Version + "/" + resource.Resource + "/" + string(operation)
+}
 
-	encoded, err := json.Marshal(projection)
-	if err != nil {
-		return ""
+// TriggerResources returns the bounded explicit watch set. Invalid stored input
+// must not expand into an unbounded informer/index working set.
+func TriggerResources(trigger *capsulev1beta2.TenantResourceTrigger) []schema.GroupVersionResource {
+	if validateTriggerRules(trigger, "trigger") != nil {
+		return nil
 	}
 
-	hash := sha256.Sum256(encoded)
+	out := make([]schema.GroupVersionResource, 0, len(trigger.APIGroups)*len(trigger.APIVersions)*len(trigger.Resources))
 
-	return hex.EncodeToString(hash[:])
+	for _, group := range trigger.APIGroups {
+		for _, version := range trigger.APIVersions {
+			for _, resource := range trigger.Resources {
+				out = append(out, schema.GroupVersionResource{Group: group, Version: version, Resource: resource})
+			}
+		}
+	}
+
+	return out
 }
 
 func Interval(spec *capsulev1beta2.TenantResourceCommonSpec) time.Duration {
@@ -102,62 +95,4 @@ func Managed(obj *metav1.PartialObjectMetadata) bool {
 	}
 
 	return false
-}
-
-// BookkeepingRequest excludes controller updates to replication parents, including
-// notification patches and status writes. User changes remain eligible even when
-// the parent subscribes to its own kind. No persistent management marker is added.
-func BookkeepingRequest(req *admissionrequestv1.AdmissionRequest) bool {
-	return req.Operation == admissionrequestv1.Update && req.Resource.Group == capsulev1beta2.GroupVersion.Group &&
-		(req.Resource.Resource == "tenantresources" || req.Resource.Resource == "globaltenantresources") &&
-		users.IsControllerServiceAccount(req.UserInfo.Username)
-}
-
-// Webhook lets the API server evaluate native admission CEL (including
-// authorizer) and selectors. The path carries the exact predicate identity.
-func Webhook(trigger *capsulev1beta2.TenantResourceTrigger, namespace string, client admissionv1.WebhookClientConfig, delivery *DeliveryKey) admissionv1.ValidatingWebhook {
-	id := MatchID(trigger)
-
-	rule := *trigger.RuleWithOperations.DeepCopy()
-	if slices.Contains(rule.Operations, admissionv1.OperationAll) {
-		rule.Operations = []admissionv1.OperationType{admissionv1.Create, admissionv1.Update, admissionv1.Delete}
-	}
-
-	rule.Scope = ptr.To(admissionv1.NamespacedScope)
-
-	conditions := append([]admissionv1.MatchCondition(nil), trigger.MatchConditions...)
-	conditions = append(conditions, admissionv1.MatchCondition{Name: "capsule-trigger-dry-run", Expression: "!request.dryRun"})
-
-	conditions = append(conditions, admissionv1.MatchCondition{Name: "capsule-trigger-unmanaged", Expression: unmanagedExpression("object") + " && " + unmanagedExpression("oldObject")})
-
-	name, controllerNamespace := configuration.ControllerServiceAccount()
-	if name != "" && controllerNamespace != "" {
-		username := "system:serviceaccount:" + controllerNamespace + ":" + name
-		conditions = append(conditions, admissionv1.MatchCondition{Name: "capsule-trigger-bookkeeping", Expression: "!(request.operation == 'UPDATE' && request.resource.group == " + admissionapi.CelQuote(capsulev1beta2.GroupVersion.Group) + " && request.resource.resource in ['tenantresources', 'globaltenantresources'] && request.userInfo.username == " + admissionapi.CelQuote(username) + ")"})
-	}
-
-	if namespace != "" {
-		conditions = append(conditions, admissionv1.MatchCondition{Name: "capsule-trigger-namespace", Expression: "request.namespace == " + admissionapi.CelQuote(namespace)})
-	}
-
-	return admissionv1.ValidatingWebhook{
-		Name:                    "trigger-" + id[:40] + ".projectcapsule.dev",
-		ClientConfig:            admissionapi.DynamicClientWithPath(client, delivery.Path(id)),
-		Rules:                   []admissionv1.RuleWithOperations{rule},
-		NamespaceSelector:       trigger.NamespaceSelector.DeepCopy(),
-		ObjectSelector:          trigger.ObjectSelector.DeepCopy(),
-		MatchConditions:         conditions,
-		FailurePolicy:           ptr.To(admissionv1.Ignore),
-		MatchPolicy:             ptr.To(admissionv1.Equivalent),
-		SideEffects:             ptr.To(admissionv1.SideEffectClassNoneOnDryRun),
-		TimeoutSeconds:          new(int32(2)),
-		AdmissionReviewVersions: []string{"v1"},
-	}
-}
-
-func unmanagedExpression(variable string) string {
-	lifecycle := []string{meta.NewManagedByCapsuleLabel, meta.CreatedByCapsuleLabel, meta.ProtectedByCapsuleLabel}
-	legacy := []string{meta.ResourcesLabel, meta.ReplicationProtectionLabel, meta.LimitRangeLabel, meta.NetworkPolicyLabel, meta.ResourceQuotaLabel, meta.RuleQuotaLabel, meta.RolebindingLabel}
-
-	return fmt.Sprintf("(%[1]s == null || !has(%[1]s.metadata) || ((!has(%[1]s.metadata.labels) || !%[1]s.metadata.labels.exists(k, (k in %[2]s && %[1]s.metadata.labels[k] in ['controller','resources','replications']) || k in %[3]s)) && (!has(%[1]s.metadata.ownerReferences) || !%[1]s.metadata.ownerReferences.exists(o, o.apiVersion.startsWith('%[4]s/')))))", variable, admissionapi.CelStringList(lifecycle), admissionapi.CelStringList(legacy), capsulev1beta2.GroupVersion.Group)
 }

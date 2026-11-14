@@ -552,12 +552,12 @@ spec:
                   rule: duration(self) >= duration('1s') && duration(self) <= duration('24h')
               triggers:
                 description: |-
-                  Triggers request reconciliation on matching namespaced admission attempts.
+                  Triggers request reconciliation on observed namespaced resource changes.
                   Capsule-managed resources never trigger reconciliation. Delivery is best effort;
-                  resyncPeriod remains the recovery mechanism for missed or pre-persistence events.
+                  resyncPeriod remains the recovery mechanism for missed events.
                 items:
                   description: |-
-                    TenantResourceTrigger requests best-effort reconciliation on matching admission attempts.
+                    TenantResourceTrigger requests best-effort reconciliation on observed resource changes.
                     Resource behavior and replication destinations remain defined by resources.
                   properties:
                     apiGroups:
@@ -579,8 +579,8 @@ spec:
                       type: array
                       x-kubernetes-list-type: atomic
                     audience:
-                      description: Audience uses the same identity matching as namespace
-                        rules. Empty matches everyone.
+                      description: 'Deprecated: watches do not carry request identities.
+                        Audience must be empty.'
                       items:
                         properties:
                           kind:
@@ -596,11 +596,11 @@ spec:
                         - kind
                         - name
                         type: object
-                      maxItems: 64
+                      maxItems: 0
                       type: array
                     matchConditions:
-                      description: MatchConditions are native admission CEL conditions.
-                        All must match.
+                      description: MatchConditions are CEL conditions over object,
+                        oldObject and operation. All must match.
                       items:
                         description: MatchCondition represents a condition which must
                           by fulfilled for a request to be sent to a webhook.
@@ -698,7 +698,7 @@ spec:
                       x-kubernetes-map-type: atomic
                     objectSelector:
                       description: ObjectSelector matches the labels of either the
-                        old or new admission object.
+                        old or new observed object.
                       properties:
                         matchExpressions:
                           description: matchExpressions is a list of label selector
@@ -789,6 +789,14 @@ spec:
                   required:
                   - name
                   type: object
+                  x-kubernetes-validations:
+                  - message: watch triggers require at most 16 explicit group/version/resource
+                      combinations
+                    rule: has(self.operations) && size(self.operations) <= 3 && has(self.apiGroups)
+                      && has(self.apiVersions) && has(self.resources) && size(self.apiGroups)
+                      <= 8 && size(self.apiVersions) <= 8 && size(self.resources)
+                      <= 8 && size(self.apiGroups) * size(self.apiVersions) * size(self.resources)
+                      <= 16
                 maxItems: 32
                 type: array
                 x-kubernetes-list-map-keys:
@@ -1006,8 +1014,8 @@ spec:
                 description: Number of managed resources.
                 type: integer
               trigger:
-                description: Trigger records the last admission notification handled
-                  by this controller.
+                description: Trigger records the last watch notification handled by
+                  this controller.
                 properties:
                   lastTriggeredAt:
                     description: LastTriggeredAt is the start of the last triggered

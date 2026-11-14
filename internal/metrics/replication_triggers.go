@@ -9,17 +9,24 @@ import (
 )
 
 type TriggerRecorder struct {
-	Notifications        *prometheus.CounterVec
-	OmittedRegistrations prometheus.Gauge
+	Notifications  *prometheus.CounterVec
+	ActiveWatches  prometheus.Gauge
+	OmittedWatches prometheus.Gauge
+	Events         *prometheus.CounterVec
 }
 
 func NewTriggerRecorder() *TriggerRecorder {
-	return &TriggerRecorder{Notifications: prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: metricsPrefix, Name: "replication_trigger_notifications_total", Help: "Replication trigger notifications by bounded outcome."}, []string{"outcome"}), OmittedRegistrations: prometheus.NewGauge(prometheus.GaugeOpts{Namespace: metricsPrefix, Name: "replication_trigger_registrations_omitted", Help: "Native trigger groups omitted because the registration budget is exhausted."})}
+	return &TriggerRecorder{
+		Notifications:  prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: metricsPrefix, Name: "replication_trigger_notifications_total", Help: "Replication trigger notifications by bounded outcome."}, []string{"outcome"}),
+		ActiveWatches:  prometheus.NewGauge(prometheus.GaugeOpts{Namespace: metricsPrefix, Name: "replication_trigger_watches", Help: "Shared trigger resource informers on this replica."}),
+		OmittedWatches: prometheus.NewGauge(prometheus.GaugeOpts{Namespace: metricsPrefix, Name: "replication_trigger_watches_omitted", Help: "Watch resources or subscriptions omitted by validation, discovery or capacity limits."}),
+		Events:         prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: metricsPrefix, Name: "replication_trigger_events_total", Help: "Resource watch events by bounded processing outcome."}, []string{"outcome"}),
+	}
 }
 
 func MustMakeTriggerRecorder() *TriggerRecorder {
 	r := NewTriggerRecorder()
-	ctrlmetrics.Registry.MustRegister(r.Notifications, r.OmittedRegistrations)
+	ctrlmetrics.Registry.MustRegister(r.Notifications, r.ActiveWatches, r.OmittedWatches, r.Events)
 
 	return r
 }

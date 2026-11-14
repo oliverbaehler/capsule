@@ -27,7 +27,7 @@ type TenantResourceCommonStatus struct {
 	// Serviceaccount used for impersonation
 	//+optional
 	ServiceAccount *meta.NamespacedRFC1123ObjectReferenceWithNamespace `json:"serviceAccount,omitzero"`
-	// Trigger records the last admission notification handled by this controller.
+	// Trigger records the last watch notification handled by this controller.
 	// +optional
 	Trigger *TenantResourceTriggerStatus `json:"trigger,omitempty"`
 	// NextResyncAt is the next periodic resync deadline for trigger-enabled replications.
@@ -42,8 +42,9 @@ type TenantResourceTriggerStatus struct {
 	LastTriggeredAt metav1.MicroTime `json:"lastTriggeredAt"`
 }
 
-// TenantResourceTrigger requests best-effort reconciliation on matching admission attempts.
+// TenantResourceTrigger requests best-effort reconciliation on observed resource changes.
 // Resource behavior and replication destinations remain defined by resources.
+// +kubebuilder:validation:XValidation:rule="has(self.operations) && size(self.operations) <= 3 && has(self.apiGroups) && has(self.apiVersions) && has(self.resources) && size(self.apiGroups) <= 8 && size(self.apiVersions) <= 8 && size(self.resources) <= 8 && size(self.apiGroups) * size(self.apiVersions) * size(self.resources) <= 16",message="watch triggers require at most 16 explicit group/version/resource combinations"
 type TenantResourceTrigger struct {
 	admissionv1.RuleWithOperations `json:",inline"`
 
@@ -52,18 +53,18 @@ type TenantResourceTrigger struct {
 	// +kubebuilder:validation:MaxLength=63
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	Name string `json:"name"`
-	// Audience uses the same identity matching as namespace rules. Empty matches everyone.
+	// Deprecated: watches do not carry request identities. Audience must be empty.
 	// +optional
-	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:MaxItems=0
 	Audience []rules.Audience `json:"audience,omitempty"`
 	// NamespaceSelector selects event source namespaces for GlobalTenantResources.
 	// TenantResources always observe only their own namespace and cannot set this field.
 	// +optional
 	NamespaceSelector *metav1.LabelSelector `json:"namespaceSelector,omitempty"`
-	// ObjectSelector matches the labels of either the old or new admission object.
+	// ObjectSelector matches the labels of either the old or new observed object.
 	// +optional
 	ObjectSelector *metav1.LabelSelector `json:"objectSelector,omitempty"`
-	// MatchConditions are native admission CEL conditions. All must match.
+	// MatchConditions are CEL conditions over object, oldObject and operation. All must match.
 	// +optional
 	// +kubebuilder:validation:MaxItems=60
 	// +listType=map
@@ -72,9 +73,9 @@ type TenantResourceTrigger struct {
 }
 
 type TenantResourceCommonSpec struct {
-	// Triggers request reconciliation on matching namespaced admission attempts.
+	// Triggers request reconciliation on observed namespaced resource changes.
 	// Capsule-managed resources never trigger reconciliation. Delivery is best effort;
-	// resyncPeriod remains the recovery mechanism for missed or pre-persistence events.
+	// resyncPeriod remains the recovery mechanism for missed events.
 	// +optional
 	// +kubebuilder:validation:MaxItems=32
 	// +listType=map

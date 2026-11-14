@@ -4,178 +4,90 @@
 package cache
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"testing"
-
-	"github.com/google/cel-go/cel"
-	admissionv1 "k8s.io/api/admissionregistration/v1"
-	admissioncel "k8s.io/apiserver/pkg/admission/plugin/cel"
-	"k8s.io/apiserver/pkg/cel/environment"
-
-	capsulev1beta2 "github.com/projectcapsule/capsule/api/v1beta2"
-	"github.com/projectcapsule/capsule/pkg/runtime/replication"
 )
 
-func TestNativeManagedConditionOldAndNew(t *testing.T) {
+func TestWatchConditionsReuseResetAndCost(t *testing.T) {
 	c, err := NewCELCache()
 	if err != nil {
 		t.Fatal(err)
 	}
-	hook := replication.Webhook(&capsulev1beta2.TenantResourceTrigger{}, "", admissionv1.WebhookClientConfig{}, testDeliveryKey(t))
-	var expression string
-	for _, condition := range hook.MatchConditions {
-		if condition.Name == "capsule-trigger-unmanaged" {
-			expression = condition.Expression
-		}
-	}
-	if err := c.ValidateTriggerCondition(expression); err != nil {
+	first, err := c.GetOrCompileTriggerCondition("object.metadata.name == 'a'")
+	if err != nil {
 		t.Fatal(err)
 	}
-	program := nativeTriggerProgram(t, c, expression)
-	plain := map[string]any{"metadata": map[string]any{"name": "source"}}
-	managed := map[string]any{"metadata": map[string]any{"labels": map[string]any{"projectcapsule.dev/managed-by": "replications"}}}
-	for _, tc := range []struct {
-		name     string
-		new, old any
-		want     bool
-	}{{"create", plain, nil, true}, {"delete", nil, plain, true}, {"managed-create", managed, nil, false}, {"managed-delete", nil, managed, false}, {"marker-removed", plain, managed, false}, {"marker-added", managed, plain, false}, {"update", plain, plain, true}} {
-		t.Run(tc.name, func(t *testing.T) {
-			value, _, err := program.ContextEval(t.Context(), map[string]any{"object": tc.new, "oldObject": tc.old})
-			if err != nil || value.Value() != tc.want {
-				t.Fatalf("eligibility=%v error=%v want=%v", value, err, tc.want)
-			}
-		})
-	}
-	for _, tenantName := range []string{"controller", "resources", "replications"} {
-		obj := map[string]any{"metadata": map[string]any{"labels": map[string]any{"capsule.clastix.io/managed-by": tenantName, "projectcapsule.dev/tenant": tenantName}}}
-		value, _, err := program.ContextEval(t.Context(), map[string]any{"object": obj, "oldObject": obj})
-		if err != nil || value.Value() != true {
-			t.Fatalf("tenant %s incorrectly excluded: %v %v", tenantName, value, err)
-		}
-	}
 	var wg sync.WaitGroup
-	for range 32 {
+	for range 16 {
 		wg.Go(func() {
-			if err := c.ValidateTriggerCondition(expression); err != nil {
-				t.Error(err)
+			other, err := c.GetOrCompileTriggerCondition("object.metadata.name == 'a'")
+			if err != nil || other != first {
+				t.Errorf("warm artifact not reused: %v", err)
 			}
 		})
 	}
 	wg.Wait()
-	if len(c.triggerConditions) != 1 {
-		t.Fatal("concurrent compilation did not reuse entry")
+	for i := range maxTriggerConditions + 1 {
+		if _, err := c.GetOrCompileTriggerCondition(fmt.Sprintf("object.metadata.name != '%d'", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(c.triggerConditions) > maxTriggerConditions {
+		t.Fatal("unbounded program cache")
 	}
 	c.Reset()
 	if len(c.triggerConditions) != 0 {
-		t.Fatal("reset retained native conditions")
+		t.Fatal("reset retained programs")
 	}
-	var cold sync.WaitGroup
-	for range 32 {
-		cold.Go(func() {
-			if err := c.ValidateTriggerCondition("request.namespace == 'shared'"); err != nil {
-				t.Error(err)
-			}
-		})
+	// Retired immutable programs remain usable by active prepared subscriptions.
+	if matched, err := first.EvaluateBooleanWithVariables(t.Context(), map[string]any{"object": map[string]any{"metadata": map[string]any{"name": "a"}}}); !matched || err != nil {
+		t.Fatal(err)
 	}
-	cold.Wait()
-	if len(c.triggerConditions) != 1 {
-		t.Fatal("concurrent native misses published duplicate entries")
-	}
-}
-
-func TestNativeBookkeepingExclusionPreservesUserUpdates(t *testing.T) {
-	t.Setenv("SERVICE_ACCOUNT", "capsule")
-	t.Setenv("NAMESPACE", "capsule-system")
-	c, err := NewCELCache()
+	expensive, err := c.GetOrCompileTriggerCondition("object.items.all(x, object.items.all(y, x == y || x != y))")
 	if err != nil {
 		t.Fatal(err)
 	}
-	hook := replication.Webhook(&capsulev1beta2.TenantResourceTrigger{}, "", admissionv1.WebhookClientConfig{}, testDeliveryKey(t))
-	var expression string
-	for _, condition := range hook.MatchConditions {
-		if condition.Name == "capsule-trigger-bookkeeping" {
-			expression = condition.Expression
-		}
+	items := make([]any, 500)
+	for i := range items {
+		items[i] = int64(i)
 	}
-	if expression == "" {
-		t.Fatal("missing native bookkeeping gate")
-	}
-	if err := c.ValidateTriggerCondition(expression); err != nil {
-		t.Fatal(err)
-	}
-	for _, tc := range []struct {
-		user, group, resource, operation string
-		want                             bool
-	}{
-		{"system:serviceaccount:capsule-system:capsule", capsulev1beta2.GroupVersion.Group, "tenantresources", "UPDATE", false},
-		{"system:serviceaccount:capsule-system:capsule", capsulev1beta2.GroupVersion.Group, "globaltenantresources", "UPDATE", false},
-		{"alice", capsulev1beta2.GroupVersion.Group, "tenantresources", "UPDATE", true},
-		{"system:serviceaccount:capsule-system:capsule", "", "secrets", "UPDATE", true},
-		{"system:serviceaccount:capsule-system:capsule", capsulev1beta2.GroupVersion.Group, "tenantresources", "CREATE", true},
-	} {
-		request := map[string]any{"operation": tc.operation, "resource": map[string]any{"group": tc.group, "resource": tc.resource}, "userInfo": map[string]any{"username": tc.user}}
-		value, _, err := nativeTriggerProgram(t, c, expression).ContextEval(t.Context(), map[string]any{"request": request})
-		if err != nil || value.Value() != tc.want {
-			t.Fatalf("%+v: result=%v err=%v", tc, value, err)
-		}
+	if _, err := expensive.EvaluateBooleanWithVariables(context.Background(), map[string]any{"object": map[string]any{"items": items}}); err == nil {
+		t.Fatal("watch condition had no cost limit")
 	}
 }
 
-func BenchmarkNativeTriggerConditions(b *testing.B) {
-	for _, state := range []string{"warm", "cold", "invalidated", "concurrent"} {
-		b.Run(state, func(b *testing.B) {
+func BenchmarkWatchConditionCompilation(b *testing.B) {
+	for _, mode := range []string{"cold", "warm", "concurrent"} {
+		b.Run(mode, func(b *testing.B) {
 			c, err := NewCELCache()
 			if err != nil {
 				b.Fatal(err)
 			}
-			expression := "request.operation == 'UPDATE'"
-			if err := c.ValidateTriggerCondition(expression); err != nil {
+			expression := "operation != 'UPDATE' || object.data != oldObject.data"
+			if _, err := c.GetOrCompileTriggerCondition(expression); err != nil {
 				b.Fatal(err)
 			}
 			b.ReportAllocs()
-			if state == "concurrent" {
+			if mode == "concurrent" {
 				b.RunParallel(func(pb *testing.PB) {
 					for pb.Next() {
-						if err := c.ValidateTriggerCondition(expression); err != nil {
-							b.Error(err)
+						if _, err := c.GetOrCompileTriggerCondition(expression); err != nil {
+							b.Fatal(err)
 						}
 					}
 				})
 				return
 			}
-			index := 0
 			for b.Loop() {
-				expr := expression
-				if state == "cold" {
-					expr = fmt.Sprintf("request.name == 'name-%d'", index)
-					index++
-				}
-				if state == "invalidated" {
+				if mode == "cold" {
 					c.Reset()
 				}
-				if err := c.ValidateTriggerCondition(expr); err != nil {
+				if _, err := c.GetOrCompileTriggerCondition(expression); err != nil {
 					b.Fatal(err)
 				}
 			}
 		})
 	}
-}
-
-func testDeliveryKey(tb testing.TB) *replication.DeliveryKey {
-	tb.Helper()
-	key, err := replication.NewDeliveryKey(make([]byte, 32))
-	if err != nil {
-		tb.Fatal(err)
-	}
-	return key
-}
-
-func nativeTriggerProgram(t *testing.T, c *CELCache, expression string) cel.Program {
-	t.Helper()
-	result := c.triggerCompiler.CompileCELExpression(triggerExpression(expression), admissioncel.OptionalVariableDeclarations{HasAuthorizer: true}, environment.NewExpressions)
-	if result.Error != nil {
-		t.Fatal(result.Error)
-	}
-	return result.Program
 }

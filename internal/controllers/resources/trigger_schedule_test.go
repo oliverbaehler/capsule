@@ -160,8 +160,8 @@ func TestTriggerDispatcherIncarnationAndPendingToken(t *testing.T) {
 	obj := &capsulev1beta2.TenantResource{Name: "source", Namespace: "ns", UID: "current", Spec: capsulev1beta2.TenantResourceSpec{TenantResourceCommonSpec: capsulev1beta2.TenantResourceCommonSpec{Triggers: []capsulev1beta2.TenantResourceTrigger{{Name: "events"}}}}}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(obj).Build()
 	d := NewTriggerDispatcher(c, c, logr.Discard(), metrics.NewTriggerRecorder())
-	if d.NeedLeaderElection() {
-		t.Fatal("webhook replica cannot dispatch without leadership")
+	if !d.NeedLeaderElection() {
+		t.Fatal("watch dispatcher must run only on the elected replica")
 	}
 	target := replication.Target{Name: obj.Name, Namespace: obj.Namespace, UID: "old"}
 	if _, err := d.dispatch(t.Context(), target, time.Now()); err != nil {

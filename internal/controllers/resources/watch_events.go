@@ -1,0 +1,189 @@
+// Copyright 2020-2026 Project Capsule Authors
+// SPDX-License-Identifier: Apache-2.0
+
+package resources
+
+import (
+	"context"
+	"maps"
+	"strings"
+
+	admissionv1 "k8s.io/api/admissionregistration/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	clientcache "k8s.io/client-go/tools/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	capsulev1beta2 "github.com/projectcapsule/capsule/api/v1beta2"
+	"github.com/projectcapsule/capsule/pkg/api/meta"
+	"github.com/projectcapsule/capsule/pkg/runtime/replication"
+	"github.com/projectcapsule/capsule/pkg/runtime/ssa"
+)
+
+type resourceWatchEvent struct {
+	done              <-chan struct{}
+	resource          schema.GroupVersionResource
+	operation         admissionv1.OperationType
+	oldObject, object *unstructured.Unstructured
+}
+
+func watchObject(value any) *unstructured.Unstructured {
+	if tombstone, ok := value.(clientcache.DeletedFinalStateUnknown); ok {
+		value = tombstone.Obj
+	}
+
+	object, _ := value.(*unstructured.Unstructured)
+
+	return object
+}
+
+func watchManaged(object *unstructured.Unstructured) bool {
+	if object == nil {
+		return false
+	}
+
+	metadata := &metav1.PartialObjectMetadata{Labels: object.GetLabels(), OwnerReferences: object.GetOwnerReferences()}
+	if replication.Managed(metadata) || len(ssa.ReplicationOwnerPrefixes(object, "")) > 0 {
+		return true
+	}
+
+	for _, field := range object.GetManagedFields() {
+		if strings.HasPrefix(field.Manager, meta.FieldManagerCapsulePrefix+"/") {
+			return true
+		}
+	}
+
+	return false
+}
+
+func bookkeepingEvent(resource schema.GroupVersionResource, oldObject, object *unstructured.Unstructured) bool {
+	if resource.Group != capsulev1beta2.GroupVersion.Group || (resource.Resource != "tenantresources" && resource.Resource != "globaltenantresources") || oldObject == nil || object == nil {
+		return false
+	}
+
+	if oldObject.GetGeneration() != object.GetGeneration() || !maps.Equal(oldObject.GetLabels(), object.GetLabels()) {
+		return false
+	}
+
+	oldAnnotations, newAnnotations := oldObject.GetAnnotations(), object.GetAnnotations()
+	for _, key := range []string{replication.TriggerAnnotation, meta.ReconcileAnnotation} {
+		delete(oldAnnotations, key)
+		delete(newAnnotations, key)
+	}
+	// Watch events have no actor identity. Ignore parent status/finalizer and
+	// internal request-token changes by their contents, while preserving spec,
+	// label and other annotation changes from any writer.
+	return maps.Equal(oldAnnotations, newAnnotations)
+}
+
+func (r *ResourceWatches) enqueueEvent(ctx context.Context, resource schema.GroupVersionResource, operation admissionv1.OperationType, oldValue, value any) {
+	if ctx.Err() != nil {
+		return
+	}
+
+	oldObject, object := watchObject(oldValue), watchObject(value)
+
+	source := object
+
+	if source == nil {
+		source = oldObject
+	}
+
+	if source == nil || source.GetNamespace() == "" || watchManaged(oldObject) || watchManaged(object) {
+		return
+	}
+
+	if oldObject != nil && object != nil {
+		if oldObject.GetUID() != object.GetUID() || oldObject.GetResourceVersion() == object.GetResourceVersion() || bookkeepingEvent(resource, oldObject, object) {
+			return
+		}
+	}
+
+	event := resourceWatchEvent{done: ctx.Done(), resource: resource, operation: operation, oldObject: oldObject, object: object}
+	select {
+	case r.events <- event:
+		r.metrics.Events.WithLabelValues("queued").Inc()
+	default:
+		r.metrics.Events.WithLabelValues("dropped").Inc()
+	}
+}
+
+func (r *ResourceWatches) matchEvent(ctx context.Context, event resourceWatchEvent) {
+	source := event.object
+	if source == nil {
+		source = event.oldObject
+	}
+
+	key := replication.ResourceKey(event.resource, event.operation)
+	local := &capsulev1beta2.TenantResourceList{}
+	global := &capsulev1beta2.GlobalTenantResourceList{}
+
+	filter := client.MatchingFields{replication.TriggerIndexerField: key}
+	if err := r.client.List(ctx, local, filter, client.InNamespace(source.GetNamespace()), client.UnsafeDisableDeepCopy); err != nil {
+		r.log.Error(err, "cannot resolve local watch subscriptions")
+
+		return
+	}
+
+	if err := r.client.List(ctx, global, filter, client.UnsafeDisableDeepCopy); err != nil {
+		r.log.Error(err, "cannot resolve global watch subscriptions")
+
+		return
+	}
+
+	var namespaceLabels map[string]string
+
+	namespaceRead, namespaceFailed := false, false
+
+	match := func(object client.Object, spec *capsulev1beta2.TenantResourceCommonSpec) {
+		if ctx.Err() != nil || spec.IsCordoned() || !object.GetDeletionTimestamp().IsZero() {
+			return
+		}
+
+		prepared, ok := r.prepared.Get(object.GetUID(), object.GetGeneration())
+		if !ok {
+			r.metrics.Events.WithLabelValues("unprepared").Inc()
+
+			return
+		}
+
+		if prepared.NeedsNamespace() && !namespaceRead {
+			namespaceRead = true
+
+			namespace := &corev1.Namespace{}
+			if err := r.client.Get(ctx, client.ObjectKey{Name: source.GetNamespace()}, namespace); err != nil {
+				namespaceFailed = true
+			} else {
+				namespaceLabels = namespace.Labels
+				namespaceFailed = !namespace.DeletionTimestamp.IsZero()
+			}
+		}
+
+		if prepared.NeedsNamespace() && namespaceFailed {
+			return
+		}
+
+		matched, err := prepared.Matches(ctx, key, event.operation, namespaceLabels, event.oldObject, event.object)
+		if err != nil {
+			r.metrics.Events.WithLabelValues("condition-error").Inc()
+
+			return
+		}
+
+		if matched {
+			r.notifier.Notify(replication.Target{Name: object.GetName(), Namespace: object.GetNamespace(), UID: object.GetUID()}, replication.Interval(spec))
+		}
+	}
+
+	for i := range local.Items {
+		object := &local.Items[i]
+		match(object, &object.Spec.TenantResourceCommonSpec)
+	}
+
+	for i := range global.Items {
+		object := &global.Items[i]
+		match(object, &object.Spec.TenantResourceCommonSpec)
+	}
+}

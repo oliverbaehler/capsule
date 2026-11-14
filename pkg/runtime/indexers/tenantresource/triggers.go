@@ -4,13 +4,16 @@
 package tenantresource
 
 import (
+	"slices"
+
+	admissionv1 "k8s.io/api/admissionregistration/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	capsulev1beta2 "github.com/projectcapsule/capsule/api/v1beta2"
 	"github.com/projectcapsule/capsule/pkg/runtime/replication"
 )
 
-// Triggers selects native matching groups without scanning unrelated parents.
+// Triggers selects explicit resource/operation subscriptions without full scans.
 type Triggers struct{ Obj client.Object }
 
 func (i Triggers) Object() client.Object { return i.Obj }
@@ -33,8 +36,20 @@ func (i Triggers) Func() client.IndexerFunc {
 		}
 
 		keys := []string{replication.TriggerEnabledKey}
+
+		if len(spec.Triggers) > 32 {
+			return nil
+		}
+
 		for idx := range spec.Triggers {
-			keys = append(keys, replication.MatchID(&spec.Triggers[idx]))
+			trigger := &spec.Triggers[idx]
+			for _, resource := range replication.TriggerResources(trigger) {
+				for _, operation := range []admissionv1.OperationType{admissionv1.Create, admissionv1.Update, admissionv1.Delete} {
+					if slices.Contains(trigger.Operations, operation) || slices.Contains(trigger.Operations, admissionv1.OperationAll) {
+						keys = append(keys, replication.ResourceKey(resource, operation))
+					}
+				}
+			}
 		}
 
 		return keys
